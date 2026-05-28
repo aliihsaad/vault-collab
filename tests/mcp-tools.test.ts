@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createVaultCollabMcpTools,
+  vaultCollabToolDefinitions,
   vaultCollabToolNames,
   type VaultCollabToolResult
 } from "../src/mcp/tools.js";
@@ -16,6 +17,12 @@ function structured<T>(result: VaultCollabToolResult): T {
     type: "text"
   });
   return result.structuredContent.result as T;
+}
+
+function schemaKeys(toolName: string): string[] {
+  const definition = vaultCollabToolDefinitions.find((tool) => tool.name === toolName);
+  expect(definition).toBeDefined();
+  return Object.keys(definition?.inputSchema.shape ?? {});
 }
 
 describe("Vault Collab MCP tools", () => {
@@ -56,6 +63,29 @@ describe("Vault Collab MCP tools", () => {
     expect(vaultCollabToolNames.some((name) => /clean|delete|manager|worker|inspector/i.test(name))).toBe(
       false
     );
+  });
+
+  it("documents register session inputs including capabilities and aliases", () => {
+    const registerKeys = schemaKeys("vault_collab_register_session");
+
+    expect(registerKeys).toEqual(
+      expect.arrayContaining([
+        "displayName",
+        "display_name",
+        "clientType",
+        "client_type",
+        "project",
+        "workspacePath",
+        "workspace_path",
+        "capabilities"
+      ])
+    );
+  });
+
+  it("does not expose empty passthrough-only schemas for any MCP tool", () => {
+    for (const definition of vaultCollabToolDefinitions) {
+      expect(Object.keys(definition.inputSchema.shape), definition.name).not.toHaveLength(0);
+    }
   });
 
   it("runs the session and handoff lifecycle through MCP-style tool calls", async () => {

@@ -61,110 +61,293 @@ export interface CreateVaultCollabMcpToolsOptions {
   clock?: () => Date;
 }
 
-const openInputSchema = z.object({}).passthrough();
+const clientTypeValues = [
+  "codex",
+  "claude-code",
+  "claude-desktop",
+  "octogent",
+  "gemini",
+  "opencode",
+  "other"
+] as const satisfies readonly ClientType[];
+const sessionStatusValues = [
+  "idle",
+  "working",
+  "blocked",
+  "awaiting_user",
+  "awaiting_verification",
+  "complete",
+  "disconnected"
+] as const satisfies readonly SessionStatus[];
+const handoffStatusValues = [
+  "available",
+  "claimed",
+  "in_progress",
+  "blocked",
+  "awaiting_user",
+  "verification_needed",
+  "resolved",
+  "abandoned",
+  "stale"
+] as const satisfies readonly HandoffStatus[];
+const handoffPriorityValues = [
+  "low",
+  "normal",
+  "high",
+  "urgent"
+] as const satisfies readonly HandoffPriority[];
+
+const clientTypeSchema = z.enum(clientTypeValues);
+const sessionStatusSchema = z.enum(sessionStatusValues);
+const handoffStatusSchema = z.enum(handoffStatusValues);
+const handoffPrioritySchema = z.enum(handoffPriorityValues);
+
+function requiredStringSchema(description: string): z.ZodString {
+  return z.string().min(1).describe(description);
+}
+
+function optionalStringSchema(description: string): z.ZodOptional<z.ZodString> {
+  return z.string().min(1).describe(description).optional();
+}
+
+function optionalStringArraySchema(description: string): z.ZodOptional<z.ZodArray<z.ZodString>> {
+  return z.array(z.string()).describe(description).optional();
+}
+
+function optionalBooleanSchema(description: string): z.ZodOptional<z.ZodBoolean> {
+  return z.boolean().describe(description).optional();
+}
+
+const registerSessionInputSchema = z.object({
+  displayName: optionalStringSchema("Required if display_name is omitted. Human-readable session name."),
+  display_name: optionalStringSchema("Snake_case alias for displayName."),
+  clientType: clientTypeSchema.describe("Required if client_type is omitted. Provider/client identifier.").optional(),
+  client_type: clientTypeSchema.describe("Snake_case alias for clientType.").optional(),
+  project: requiredStringSchema("Project name this session is working in."),
+  workspacePath: optionalStringSchema("Required if workspace_path is omitted. Local workspace path."),
+  workspace_path: optionalStringSchema("Snake_case alias for workspacePath."),
+  capabilities: z.record(z.unknown()).describe("Optional provider-neutral capability flags.").optional()
+});
+
+const ownedSessionInputSchema = z.object({
+  sessionUid: optionalStringSchema("Required if session_uid is omitted. Session identifier."),
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
+  sessionToken: optionalStringSchema("Required if session_token is omitted. Private owner token."),
+  session_token: optionalStringSchema("Snake_case alias for sessionToken.")
+});
+
+const updateSessionStateInputSchema = ownedSessionInputSchema.extend({
+  status: sessionStatusSchema.describe("New session status."),
+  detail: optionalStringSchema("Optional status detail."),
+  statusDetail: optionalStringSchema("Alias for detail."),
+  status_detail: optionalStringSchema("Snake_case alias for statusDetail.")
+});
+
+const listSessionsInputSchema = z.object({
+  project: optionalStringSchema("Optional project filter."),
+  clientType: clientTypeSchema.describe("Optional client type filter.").optional(),
+  client_type: clientTypeSchema.describe("Snake_case alias for clientType.").optional(),
+  status: sessionStatusSchema.describe("Optional session status filter.").optional()
+});
+
+const publishHandoffInputSchema = z.object({
+  shortPrompt: optionalStringSchema("Required if short_prompt is omitted. Short handoff prompt."),
+  short_prompt: optionalStringSchema("Snake_case alias for shortPrompt."),
+  sourceProject: optionalStringSchema("Required if source_project is omitted. Source project name."),
+  source_project: optionalStringSchema("Snake_case alias for sourceProject."),
+  targetProject: optionalStringSchema("Required if target_project is omitted. Target project inbox."),
+  target_project: optionalStringSchema("Snake_case alias for targetProject."),
+  relatedProjects: optionalStringArraySchema("Optional related project names."),
+  related_projects: optionalStringArraySchema("Snake_case alias for relatedProjects."),
+  relatedFiles: optionalStringArraySchema("Optional related file paths."),
+  related_files: optionalStringArraySchema("Snake_case alias for relatedFiles."),
+  sourceSessionUid: optionalStringSchema("Optional source session identifier."),
+  source_session_uid: optionalStringSchema("Snake_case alias for sourceSessionUid."),
+  suggestedSessionUid: optionalStringSchema("Optional suggested target session identifier."),
+  suggested_session_uid: optionalStringSchema("Snake_case alias for suggestedSessionUid."),
+  suggestedClientType: clientTypeSchema.describe("Optional suggested target client type.").optional(),
+  suggested_client_type: clientTypeSchema.describe("Snake_case alias for suggestedClientType.").optional(),
+  vaultMemoryUid: optionalStringSchema("Optional existing Vault memory item UID for a full brief."),
+  vault_memory_uid: optionalStringSchema("Snake_case alias for vaultMemoryUid."),
+  priority: handoffPrioritySchema.describe("Optional priority. Defaults to normal.").optional(),
+  urgent: optionalBooleanSchema("Optional urgent flag.")
+});
+
+const publishVaultLinkedHandoffInputSchema = publishHandoffInputSchema
+  .omit({
+    vaultMemoryUid: true,
+    vault_memory_uid: true
+  })
+  .extend({
+    fullBrief: optionalStringSchema("Required if full_brief is omitted. Full brief saved to Vault memory."),
+    full_brief: optionalStringSchema("Snake_case alias for fullBrief."),
+    vaultProject: optionalStringSchema("Optional Vault project override for the saved memory."),
+    vault_project: optionalStringSchema("Snake_case alias for vaultProject."),
+    vaultTitle: optionalStringSchema("Optional Vault memory title."),
+    vault_title: optionalStringSchema("Snake_case alias for vaultTitle."),
+    vaultSubject: optionalStringSchema("Optional Vault memory subject."),
+    vault_subject: optionalStringSchema("Snake_case alias for vaultSubject."),
+    keywords: optionalStringArraySchema("Optional Vault memory keywords."),
+    tags: optionalStringArraySchema("Optional Vault memory tags."),
+    nextSteps: optionalStringArraySchema("Optional follow-up steps for the Vault memory."),
+    next_steps: optionalStringArraySchema("Snake_case alias for nextSteps.")
+  });
+
+const handoffUidInputSchema = z.object({
+  handoffUid: optionalStringSchema("Required if handoff_uid is omitted. Handoff identifier."),
+  handoff_uid: optionalStringSchema("Snake_case alias for handoffUid.")
+});
+
+const ownedHandoffInputSchema = handoffUidInputSchema.extend({
+  sessionUid: optionalStringSchema("Required if session_uid is omitted. Owning session identifier."),
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
+  sessionToken: optionalStringSchema("Required if session_token is omitted. Private owner token."),
+  session_token: optionalStringSchema("Snake_case alias for sessionToken.")
+});
+
+const linkVaultMemoryInputSchema = ownedHandoffInputSchema.extend({
+  vaultMemoryUid: optionalStringSchema("Required if vault_memory_uid is omitted. Existing Vault memory item UID."),
+  vault_memory_uid: optionalStringSchema("Snake_case alias for vaultMemoryUid.")
+});
+
+const listInboxInputSchema = z.object({
+  sourceProject: optionalStringSchema("Optional source project filter."),
+  source_project: optionalStringSchema("Snake_case alias for sourceProject."),
+  targetProject: optionalStringSchema("Optional target project filter."),
+  target_project: optionalStringSchema("Snake_case alias for targetProject."),
+  status: handoffStatusSchema.describe("Optional handoff status filter.").optional(),
+  includeResolved: optionalBooleanSchema("Include resolved handoffs when listing."),
+  include_resolved: optionalBooleanSchema("Snake_case alias for includeResolved.")
+});
+
+const listEventsInputSchema = z.object({
+  handoffUid: optionalStringSchema("Optional handoff event filter."),
+  handoff_uid: optionalStringSchema("Snake_case alias for handoffUid."),
+  sessionUid: optionalStringSchema("Optional session event filter."),
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid.")
+});
+
+const updateHandoffInputSchema = ownedHandoffInputSchema.extend({
+  status: handoffStatusSchema.describe("New handoff status."),
+  progressNote: optionalStringSchema("Required if progress_note is omitted. Progress note."),
+  progress_note: optionalStringSchema("Snake_case alias for progressNote.")
+});
+
+const requestUserConfirmationInputSchema = ownedHandoffInputSchema.extend({
+  question: requiredStringSchema("Question that needs user confirmation.")
+});
+
+const resolveHandoffInputSchema = ownedHandoffInputSchema.extend({
+  summary: requiredStringSchema("Resolution summary.")
+});
+
+const reopenHandoffInputSchema = handoffUidInputSchema.extend({
+  reason: requiredStringSchema("Reason for reopening the handoff."),
+  status: handoffStatusSchema.describe("Status to reopen as. Defaults to available.").optional()
+});
 
 export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
   {
     name: "vault_collab_register_session",
     title: "Register Session",
     description: "Register a provider-neutral collaboration session and return its owner token.",
-    inputSchema: openInputSchema
+    inputSchema: registerSessionInputSchema
   },
   {
     name: "vault_collab_heartbeat_session",
     title: "Heartbeat Session",
     description: "Update a session heartbeat when the caller presents the owner token.",
-    inputSchema: openInputSchema
+    inputSchema: ownedSessionInputSchema
   },
   {
     name: "vault_collab_update_session_state",
     title: "Update Session State",
     description: "Update a session status and detail when the caller presents the owner token.",
-    inputSchema: openInputSchema
+    inputSchema: updateSessionStateInputSchema
   },
   {
     name: "vault_collab_list_sessions",
     title: "List Sessions",
     description: "List collaboration sessions without exposing owner tokens.",
-    inputSchema: openInputSchema
+    inputSchema: listSessionsInputSchema
   },
   {
     name: "vault_collab_disconnect_session",
     title: "Disconnect Session",
     description: "Mark a session disconnected without deleting its record.",
-    inputSchema: openInputSchema
+    inputSchema: ownedSessionInputSchema
   },
   {
     name: "vault_collab_publish_handoff",
     title: "Publish Handoff",
     description: "Publish a local handoff into the target project inbox.",
-    inputSchema: openInputSchema
+    inputSchema: publishHandoffInputSchema
   },
   {
     name: "vault_collab_publish_handoff_with_vault_memory",
     title: "Publish Handoff With Vault Memory",
     description: "Save a full handoff brief to Vault memory, then publish the linked local handoff.",
-    inputSchema: openInputSchema
+    inputSchema: publishVaultLinkedHandoffInputSchema
   },
   {
     name: "vault_collab_link_vault_memory",
     title: "Link Vault Memory",
     description: "Link an existing handoff to an existing Vault memory item as the source session owner.",
-    inputSchema: openInputSchema
+    inputSchema: linkVaultMemoryInputSchema
   },
   {
     name: "vault_collab_list_inbox",
     title: "List Inbox",
     description: "List open handoffs for a project or lifecycle filter.",
-    inputSchema: openInputSchema
+    inputSchema: listInboxInputSchema
   },
   {
     name: "vault_collab_get_handoff",
     title: "Get Handoff",
     description: "Read a handoff by ID.",
-    inputSchema: openInputSchema
+    inputSchema: handoffUidInputSchema
   },
   {
     name: "vault_collab_list_events",
     title: "List Events",
     description: "List inspectable session and handoff event history without mutating state.",
-    inputSchema: openInputSchema
+    inputSchema: listEventsInputSchema
   },
   {
     name: "vault_collab_claim_handoff",
     title: "Claim Handoff",
     description: "Atomically claim an available handoff for the owning session.",
-    inputSchema: openInputSchema
+    inputSchema: ownedHandoffInputSchema
   },
   {
     name: "vault_collab_update_handoff",
     title: "Update Handoff",
     description: "Update progress for a handoff claimed by the owning session.",
-    inputSchema: openInputSchema
+    inputSchema: updateHandoffInputSchema
   },
   {
     name: "vault_collab_request_user_confirmation",
     title: "Request User Confirmation",
     description: "Move a claimed handoff to awaiting_user with a question.",
-    inputSchema: openInputSchema
+    inputSchema: requestUserConfirmationInputSchema
   },
   {
     name: "vault_collab_resolve_handoff",
     title: "Resolve Handoff",
     description: "Resolve a claimed handoff with a summary.",
-    inputSchema: openInputSchema
+    inputSchema: resolveHandoffInputSchema
   },
   {
     name: "vault_collab_reopen_handoff",
     title: "Reopen Handoff",
     description: "Reopen a handoff as recoverable work.",
-    inputSchema: openInputSchema
+    inputSchema: reopenHandoffInputSchema
   },
   {
     name: "vault_collab_release_handoff",
     title: "Release Handoff",
     description: "Release a claimed handoff back to the available inbox.",
-    inputSchema: openInputSchema
+    inputSchema: ownedHandoffInputSchema
   }
 ];
 
@@ -458,16 +641,7 @@ function optionalClientType(args: Record<string, unknown>, ...keys: string[]): C
 }
 
 function parseClientType(value: string): ClientType {
-  const allowed: ClientType[] = [
-    "codex",
-    "claude-code",
-    "claude-desktop",
-    "octogent",
-    "gemini",
-    "opencode",
-    "other"
-  ];
-  if (!allowed.includes(value as ClientType)) {
+  if (!clientTypeValues.includes(value as (typeof clientTypeValues)[number])) {
     throw new Error(`Invalid client type: ${value}`);
   }
 
@@ -487,16 +661,7 @@ function optionalSessionStatus(
 }
 
 function parseSessionStatus(value: string): SessionStatus {
-  const allowed: SessionStatus[] = [
-    "idle",
-    "working",
-    "blocked",
-    "awaiting_user",
-    "awaiting_verification",
-    "complete",
-    "disconnected"
-  ];
-  if (!allowed.includes(value as SessionStatus)) {
+  if (!sessionStatusValues.includes(value as (typeof sessionStatusValues)[number])) {
     throw new Error(`Invalid session status: ${value}`);
   }
 
@@ -516,18 +681,7 @@ function optionalHandoffStatus(
 }
 
 function parseHandoffStatus(value: string): HandoffStatus {
-  const allowed: HandoffStatus[] = [
-    "available",
-    "claimed",
-    "in_progress",
-    "blocked",
-    "awaiting_user",
-    "verification_needed",
-    "resolved",
-    "abandoned",
-    "stale"
-  ];
-  if (!allowed.includes(value as HandoffStatus)) {
+  if (!handoffStatusValues.includes(value as (typeof handoffStatusValues)[number])) {
     throw new Error(`Invalid handoff status: ${value}`);
   }
 
@@ -543,8 +697,7 @@ function optionalHandoffPriority(
 }
 
 function parseHandoffPriority(value: string): HandoffPriority {
-  const allowed: HandoffPriority[] = ["low", "normal", "high", "urgent"];
-  if (!allowed.includes(value as HandoffPriority)) {
+  if (!handoffPriorityValues.includes(value as (typeof handoffPriorityValues)[number])) {
     throw new Error(`Invalid handoff priority: ${value}`);
   }
 
