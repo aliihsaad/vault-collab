@@ -265,6 +265,85 @@ export class HandoffService {
     return this.requireHandoff(handoffUid);
   }
 
+  requestUserConfirmation(
+    handoffUid: string,
+    sessionUid: string,
+    sessionToken: string,
+    question: string
+  ): HandoffRecord {
+    this.assertClaimOwner(handoffUid, sessionUid, sessionToken);
+    const now = this.now();
+
+    this.db
+      .prepare(
+        `
+        UPDATE handoffs
+        SET status = ?, progress_note = ?, updated_at = ?
+        WHERE handoff_uid = ?
+      `
+      )
+      .run("awaiting_user", question, now, handoffUid);
+
+    this.events.recordEvent({
+      eventType: "handoff.user_confirmation_requested",
+      handoffUid,
+      sessionUid,
+      payload: {
+        question
+      }
+    });
+
+    return this.requireHandoff(handoffUid);
+  }
+
+  releaseHandoff(
+    handoffUid: string,
+    sessionUid: string,
+    sessionToken: string
+  ): HandoffRecord {
+    this.assertClaimOwner(handoffUid, sessionUid, sessionToken);
+    const now = this.now();
+
+    const release = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          UPDATE handoffs
+          SET status = ?,
+              claimed_by_session_uid = NULL,
+              claim_token = NULL,
+              lease_expires_at = NULL,
+              progress_note = NULL,
+              updated_at = ?
+          WHERE handoff_uid = ?
+        `
+        )
+        .run("available", now, handoffUid);
+
+      this.db
+        .prepare(
+          `
+          UPDATE sessions
+          SET current_handoff_uid = NULL, updated_at = ?
+          WHERE session_uid = ?
+            AND current_handoff_uid = ?
+        `
+        )
+        .run(now, sessionUid, handoffUid);
+    });
+
+    release();
+
+    this.events.recordEvent({
+      eventType: "handoff.released",
+      handoffUid,
+      sessionUid,
+      payload: {}
+    });
+
+    return this.requireHandoff(handoffUid);
+  }
+
   resolveHandoff(
     handoffUid: string,
     sessionUid: string,

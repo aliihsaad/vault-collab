@@ -169,6 +169,70 @@ describe("HandoffService", () => {
     );
   });
 
+  it("marks a claimed handoff as awaiting user confirmation", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Ask the user",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    now = new Date("2026-05-28T11:02:30.000Z");
+
+    const awaitingUser = handoffs.requestUserConfirmation(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      "Should I merge this branch before MCP wiring?"
+    );
+
+    expect(awaitingUser).toMatchObject({
+      status: "awaiting_user",
+      progressNote: "Should I merge this branch before MCP wiring?",
+      updatedAt: "2026-05-28T11:02:30.000Z"
+    });
+    expect(events.listEvents({ handoffUid: handoff.handoffUid }).at(-1)).toMatchObject({
+      eventType: "handoff.user_confirmation_requested",
+      sessionUid: claude.sessionUid,
+      payload: {
+        question: "Should I merge this branch before MCP wiring?"
+      }
+    });
+  });
+
+  it("releases a claimed handoff back to the available inbox", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Release me",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    now = new Date("2026-05-28T11:02:45.000Z");
+
+    const released = handoffs.releaseHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken
+    );
+
+    expect(released).toMatchObject({
+      status: "available",
+      claimedBySessionUid: null,
+      progressNote: null,
+      updatedAt: "2026-05-28T11:02:45.000Z"
+    });
+    expect(sessions.listSessions({ clientType: "claude-code" })[0].currentHandoffUid).toBeNull();
+    expect(handoffs.listInbox({ targetProject: "Vault Collab" })).toHaveLength(1);
+    expect(() =>
+      handoffs.updateHandoff(
+        handoff.handoffUid,
+        claude.sessionUid,
+        claude.sessionToken,
+        "in_progress",
+        "released work"
+      )
+    ).toThrow(/not claimed by session/i);
+  });
+
   it("resolves a claimed handoff without deleting its history", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Resolve me",
