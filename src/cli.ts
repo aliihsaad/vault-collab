@@ -25,6 +25,7 @@ interface ParsedCommand {
 interface Services {
   sessions: SessionService;
   handoffs: HandoffService;
+  events: EventService;
   close: () => void;
 }
 
@@ -37,6 +38,7 @@ const commands = new Set([
   "publish",
   "link-vault-memory",
   "inbox",
+  "events",
   "claim",
   "update",
   "resolve",
@@ -136,6 +138,12 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         includeResolved: parsed.options.has("include-resolved")
       });
 
+    case "events":
+      return services.events.listEvents({
+        handoffUid: optionalOption(parsed, "handoff-uid"),
+        sessionUid: optionalOption(parsed, "session-uid")
+      });
+
     case "claim":
       return services.handoffs.claimHandoff(
         requiredOption(parsed, "handoff-uid"),
@@ -179,6 +187,7 @@ function createServices(dbPath: string): Services {
   return {
     sessions: new SessionService(db, events),
     handoffs: new HandoffService(db, events),
+    events,
     close: () => db.close()
   };
 }

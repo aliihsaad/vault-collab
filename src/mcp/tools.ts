@@ -24,6 +24,7 @@ export const vaultCollabToolNames = [
   "vault_collab_link_vault_memory",
   "vault_collab_list_inbox",
   "vault_collab_get_handoff",
+  "vault_collab_list_events",
   "vault_collab_claim_handoff",
   "vault_collab_update_handoff",
   "vault_collab_request_user_confirmation",
@@ -121,6 +122,12 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     name: "vault_collab_get_handoff",
     title: "Get Handoff",
     description: "Read a handoff by ID.",
+    inputSchema: openInputSchema
+  },
+  {
+    name: "vault_collab_list_events",
+    title: "List Events",
+    description: "List inspectable session and handoff event history without mutating state.",
     inputSchema: openInputSchema
   },
   {
@@ -267,6 +274,11 @@ export function createVaultCollabMcpTools(
       }),
     vault_collab_get_handoff: (args) =>
       handoffs.getHandoff(requiredString(args, "handoffUid", "handoff_uid")),
+    vault_collab_list_events: (args) =>
+      events.listEvents({
+        handoffUid: optionalString(args, "handoffUid", "handoff_uid"),
+        sessionUid: optionalString(args, "sessionUid", "session_uid")
+      }),
     vault_collab_claim_handoff: (args) =>
       handoffs.claimHandoff(
         requiredString(args, "handoffUid", "handoff_uid"),

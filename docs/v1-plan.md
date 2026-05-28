@@ -6,6 +6,7 @@ Current scope:
 - TypeScript, Vitest, and SQLite scaffold.
 - Local session registration, heartbeat, state, disconnect, and listing.
 - Local handoff publish, list, claim, update, resolve, and reopen.
+- Read-only event history listing for inspectable session and handoff lifecycles.
 - JSON CLI smoke commands for the local session and handoff lifecycle.
 - Neutral MCP tools under the `vault_collab_` prefix.
 - Optional Vault memory links for full handoff briefs:

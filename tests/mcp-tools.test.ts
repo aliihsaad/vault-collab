@@ -45,6 +45,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_link_vault_memory",
       "vault_collab_list_inbox",
       "vault_collab_get_handoff",
+      "vault_collab_list_events",
       "vault_collab_claim_handoff",
       "vault_collab_update_handoff",
       "vault_collab_request_user_confirmation",
@@ -218,6 +219,43 @@ describe("Vault Collab MCP tools", () => {
       handoffUid: published.handoffUid,
       status: "available"
     });
+
+    const handoffEvents = structured<Array<{ eventType: string; sessionUid: string | null }>>(
+      await tools.callTool("vault_collab_list_events", {
+        handoffUid: published.handoffUid
+      })
+    );
+
+    expect(handoffEvents.map((event) => event.eventType)).toEqual([
+      "handoff.published",
+      "handoff.vault_memory_linked",
+      "handoff.claimed",
+      "handoff.user_confirmation_requested",
+      "handoff.released",
+      "handoff.claimed",
+      "handoff.updated",
+      "handoff.resolved",
+      "handoff.reopened"
+    ]);
+    expect(handoffEvents[1]).toMatchObject({
+      sessionUid: codex.sessionUid
+    });
+
+    const claudeEvents = structured<Array<{ eventType: string; sessionUid: string | null }>>(
+      await tools.callTool("vault_collab_list_events", {
+        sessionUid: claude.sessionUid
+      })
+    );
+
+    expect(claudeEvents.map((event) => event.eventType)).toEqual([
+      "session.registered",
+      "handoff.claimed",
+      "handoff.user_confirmation_requested",
+      "handoff.released",
+      "handoff.claimed",
+      "handoff.updated",
+      "handoff.resolved"
+    ]);
   });
 
   it("publishes a Vault-linked handoff through the optional MCP tool", async () => {

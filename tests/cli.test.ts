@@ -214,6 +214,41 @@ describe("vault-collab CLI", () => {
       status: "available",
       claimedBySessionUid: null
     });
+
+    const handoffEvents = parseJson<
+      Array<{
+        eventType: string;
+        handoffUid: string | null;
+        sessionUid: string | null;
+        payload: Record<string, unknown>;
+      }>
+    >(await runCli(["events", "--db", dbPath, "--handoff-uid", published.handoffUid]));
+
+    expect(handoffEvents.map((event) => event.eventType)).toEqual([
+      "handoff.published",
+      "handoff.vault_memory_linked",
+      "handoff.claimed",
+      "handoff.updated",
+      "handoff.resolved",
+      "handoff.reopened"
+    ]);
+    expect(handoffEvents[0]).toMatchObject({
+      handoffUid: published.handoffUid,
+      sessionUid: codex.sessionUid
+    });
+    expect(JSON.stringify(handoffEvents)).not.toContain(codex.sessionToken);
+    expect(JSON.stringify(handoffEvents)).not.toContain(claude.sessionToken);
+
+    const claudeEvents = parseJson<Array<{ eventType: string }>>(
+      await runCli(["events", "--db", dbPath, "--session-uid", claude.sessionUid])
+    );
+
+    expect(claudeEvents.map((event) => event.eventType)).toEqual([
+      "session.registered",
+      "handoff.claimed",
+      "handoff.updated",
+      "handoff.resolved"
+    ]);
   });
 
   it("rejects unknown commands without creating a destructive escape hatch", async () => {
