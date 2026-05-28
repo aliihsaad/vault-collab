@@ -1,14 +1,13 @@
 # Vault Collab
 
-Vault Collab is a local-first collaboration layer for AI coding clients. It lets
+Vault Collab is a local-first collaboration extension for The Vault. It lets
 Codex, Claude Code, Claude Desktop, Octogent, Gemini, OpenCode, and future MCP
 clients coordinate through shared sessions, handoff inboxes, owner-token checks,
 and inspectable SQLite state.
 
-This repository is a standalone project inspired by coordination patterns in
-`squad`; it is not a fork, copy, or rebrand. See
-[`docs/squad-reference-audit.md`](docs/squad-reference-audit.md) for the
-reference audit.
+The current package runs as a standalone TypeScript/SQLite core with CLI and MCP
+surfaces. It is designed to become the collaboration layer that Vault can expose
+to multiple AI clients without making any one provider special.
 
 ## Status
 
@@ -204,7 +203,6 @@ tests/
   *.test.ts                 Vitest coverage for services, CLI, MCP, Vault links
 docs/
   phase-4-vault-link.md     linked handoff usage guide
-  squad-reference-audit.md  reference lineage and non-copy decisions
   v1-plan.md                current scope and deferred areas
 ```
 
@@ -224,7 +222,6 @@ docs/
 
 - [`docs/v1-plan.md`](docs/v1-plan.md)
 - [`docs/phase-4-vault-link.md`](docs/phase-4-vault-link.md)
-- [`docs/squad-reference-audit.md`](docs/squad-reference-audit.md)
 
 ## License
 
