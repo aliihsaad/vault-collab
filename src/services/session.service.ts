@@ -92,6 +92,18 @@ export class SessionService {
   }
 
   heartbeatSession(sessionUid: string, sessionToken: string): RegisteredSession {
+    return this.updateHeartbeat(sessionUid, sessionToken, true);
+  }
+
+  heartbeatSessionSilently(sessionUid: string, sessionToken: string): RegisteredSession {
+    return this.updateHeartbeat(sessionUid, sessionToken, false);
+  }
+
+  private updateHeartbeat(
+    sessionUid: string,
+    sessionToken: string,
+    recordEvent: boolean
+  ): RegisteredSession {
     this.assertOwnedSession(sessionUid, sessionToken);
     const now = this.now();
     this.db
@@ -104,11 +116,13 @@ export class SessionService {
       )
       .run(now, now, sessionUid);
 
-    this.events.recordEvent({
-      eventType: "session.heartbeat",
-      sessionUid,
-      payload: {}
-    });
+    if (recordEvent) {
+      this.events.recordEvent({
+        eventType: "session.heartbeat",
+        sessionUid,
+        payload: {}
+      });
+    }
 
     return this.requireSession(sessionUid);
   }

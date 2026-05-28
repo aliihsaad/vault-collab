@@ -82,6 +82,31 @@ describe("SessionService", () => {
     );
   });
 
+  it("can update heartbeat silently without recording an event", () => {
+    const registered = service.registerSession({
+      displayName: "Claude Code",
+      clientType: "claude-code",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    now = new Date("2026-05-28T10:00:30.000Z");
+
+    const heartbeat = service.heartbeatSessionSilently(
+      registered.sessionUid,
+      registered.sessionToken
+    );
+
+    expect(heartbeat.lastHeartbeatAt).toBe("2026-05-28T10:00:30.000Z");
+    expect(service.listSessions()[0].lastHeartbeatAt).toBe("2026-05-28T10:00:30.000Z");
+
+    const events = db
+      .prepare("SELECT event_type FROM events WHERE session_uid = ? ORDER BY created_at ASC")
+      .all(registered.sessionUid) as Array<{ event_type: string }>;
+
+    expect(events.map((event) => event.event_type)).toEqual(["session.registered"]);
+  });
+
   it("updates session state with status detail for the owning session", () => {
     const registered = service.registerSession({
       displayName: "Claude Desktop",

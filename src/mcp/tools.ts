@@ -59,6 +59,51 @@ export interface CreateVaultCollabMcpToolsOptions {
   db?: CollabDatabase;
   vaultMemoryClient?: VaultMemoryClient;
   clock?: () => Date;
+  heartbeatIntervalMs?: number;
+}
+
+const defaultHeartbeatIntervalMs = 75_000;
+
+type HeartbeatTimer = ReturnType<typeof setInterval>;
+
+class AutoHeartbeatManager {
+  private readonly timers = new Map<string, HeartbeatTimer>();
+
+  constructor(
+    private readonly sessions: SessionService,
+    private readonly intervalMs: number
+  ) {}
+
+  start(sessionUid: string, sessionToken: string): void {
+    this.stop(sessionUid);
+
+    const timer = setInterval(() => {
+      try {
+        this.sessions.heartbeatSessionSilently(sessionUid, sessionToken);
+      } catch {
+        this.stop(sessionUid);
+      }
+    }, this.intervalMs);
+    const maybeUnref = timer as HeartbeatTimer & { unref?: () => void };
+    maybeUnref.unref?.();
+    this.timers.set(sessionUid, timer);
+  }
+
+  stop(sessionUid: string): void {
+    const timer = this.timers.get(sessionUid);
+    if (!timer) {
+      return;
+    }
+
+    clearInterval(timer);
+    this.timers.delete(sessionUid);
+  }
+
+  close(): void {
+    for (const sessionUid of Array.from(this.timers.keys())) {
+      this.stop(sessionUid);
+    }
+  }
 }
 
 const clientTypeValues = [
@@ -362,19 +407,26 @@ export function createVaultCollabMcpTools(
   const linkedHandoffs = options.vaultMemoryClient
     ? new VaultLinkedHandoffService(handoffs, options.vaultMemoryClient)
     : null;
+  const autoHeartbeats = new AutoHeartbeatManager(
+    sessions,
+    options.heartbeatIntervalMs ?? defaultHeartbeatIntervalMs
+  );
 
   const handlers: Record<
     VaultCollabToolName,
     (args: Record<string, unknown>) => unknown | Promise<unknown>
   > = {
-    vault_collab_register_session: (args) =>
-      sessions.registerSession({
+    vault_collab_register_session: (args) => {
+      const registered = sessions.registerSession({
         displayName: requiredString(args, "displayName", "display_name"),
         clientType: requiredClientType(args, "clientType", "client_type"),
         project: requiredString(args, "project"),
         workspacePath: requiredString(args, "workspacePath", "workspace_path"),
         capabilities: optionalRecord(args, "capabilities") ?? {}
-      }),
+      });
+      autoHeartbeats.start(registered.sessionUid, registered.sessionToken);
+      return registered;
+    },
     vault_collab_heartbeat_session: (args) =>
       sessions.heartbeatSession(
         requiredString(args, "sessionUid", "session_uid"),
@@ -393,11 +445,15 @@ export function createVaultCollabMcpTools(
         clientType: optionalClientType(args, "clientType", "client_type"),
         status: optionalSessionStatus(args, "status")
       }),
-    vault_collab_disconnect_session: (args) =>
-      sessions.disconnectSession(
-        requiredString(args, "sessionUid", "session_uid"),
+    vault_collab_disconnect_session: (args) => {
+      const sessionUid = requiredString(args, "sessionUid", "session_uid");
+      const disconnected = sessions.disconnectSession(
+        sessionUid,
         requiredString(args, "sessionToken", "session_token")
-      ),
+      );
+      autoHeartbeats.stop(sessionUid);
+      return disconnected;
+    },
     vault_collab_publish_handoff: (args) =>
       handoffs.publishHandoff({
         shortPrompt: requiredString(args, "shortPrompt", "short_prompt"),
@@ -518,6 +574,7 @@ export function createVaultCollabMcpTools(
       }
     },
     close: () => {
+      autoHeartbeats.close();
       if (ownsDb) {
         db.close();
       }

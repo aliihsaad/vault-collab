@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createVaultCollabMcpTools,
   vaultCollabToolDefinitions,
@@ -38,6 +38,7 @@ describe("Vault Collab MCP tools", () => {
   afterEach(() => {
     closeTools?.();
     closeTools = undefined;
+    vi.useRealTimers();
   });
 
   it("exposes the neutral tool names without destructive or role-based commands", () => {
@@ -86,6 +87,118 @@ describe("Vault Collab MCP tools", () => {
     for (const definition of vaultCollabToolDefinitions) {
       expect(Object.keys(definition.inputSchema.shape), definition.name).not.toHaveLength(0);
     }
+  });
+
+  it("automatically refreshes registered MCP sessions without heartbeat event spam", async () => {
+    vi.useFakeTimers();
+    let now = new Date("2026-05-28T10:00:00.000Z");
+    const tools = createVaultCollabMcpTools({
+      dbPath,
+      clock: () => now,
+      heartbeatIntervalMs: 1000
+    });
+    closeTools = tools.close;
+
+    const session = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Codex",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+
+    now = new Date("2026-05-28T10:00:01.000Z");
+    await vi.advanceTimersByTimeAsync(1000);
+    now = new Date("2026-05-28T10:00:02.000Z");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const sessions = structured<Array<{ sessionUid: string; lastHeartbeatAt: string }>>(
+      await tools.callTool("vault_collab_list_sessions", {
+        project: "Vault Collab"
+      })
+    );
+    const events = structured<Array<{ eventType: string }>>(
+      await tools.callTool("vault_collab_list_events", {
+        sessionUid: session.sessionUid
+      })
+    );
+
+    expect(sessions[0]).toMatchObject({
+      sessionUid: session.sessionUid,
+      lastHeartbeatAt: "2026-05-28T10:00:02.000Z"
+    });
+    expect(events.map((event) => event.eventType)).toEqual(["session.registered"]);
+  });
+
+  it("stops automatic heartbeat after explicit disconnect", async () => {
+    vi.useFakeTimers();
+    let now = new Date("2026-05-28T10:00:00.000Z");
+    const tools = createVaultCollabMcpTools({
+      dbPath,
+      clock: () => now,
+      heartbeatIntervalMs: 1000
+    });
+    closeTools = tools.close;
+
+    const session = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Claude Code",
+        clientType: "claude-code",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    expect(vi.getTimerCount()).toBe(1);
+
+    now = new Date("2026-05-28T10:00:01.000Z");
+    await vi.advanceTimersByTimeAsync(1000);
+    await tools.callTool("vault_collab_disconnect_session", {
+      sessionUid: session.sessionUid,
+      sessionToken: session.sessionToken
+    });
+
+    const disconnectedAt = structured<Array<{ lastHeartbeatAt: string }>>(
+      await tools.callTool("vault_collab_list_sessions", {
+        project: "Vault Collab"
+      })
+    )[0].lastHeartbeatAt;
+
+    now = new Date("2026-05-28T10:00:02.000Z");
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const sessions = structured<Array<{ status: string; lastHeartbeatAt: string }>>(
+      await tools.callTool("vault_collab_list_sessions", {
+        project: "Vault Collab"
+      })
+    );
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(sessions[0]).toMatchObject({
+      status: "disconnected",
+      lastHeartbeatAt: disconnectedAt
+    });
+  });
+
+  it("clears automatic heartbeat timers when tools close", async () => {
+    vi.useFakeTimers();
+    const tools = createVaultCollabMcpTools({
+      dbPath,
+      heartbeatIntervalMs: 1000
+    });
+
+    await tools.callTool("vault_collab_register_session", {
+      displayName: "Claude Desktop",
+      clientType: "claude-desktop",
+      project: "Vault Collab",
+      workspacePath: cwd
+    });
+
+    expect(vi.getTimerCount()).toBe(1);
+
+    tools.close();
+
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("runs the session and handoff lifecycle through MCP-style tool calls", async () => {
