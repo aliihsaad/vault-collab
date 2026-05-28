@@ -13,6 +13,7 @@ Current scope:
   - publish with an existing `vaultMemoryUid`,
   - publish with an injected Vault memory client,
   - or link an existing handoff to a Vault memory UID as the source session owner.
+- Phase 4 usage notes are in `docs/phase-4-vault-link.md`.
 
 Deferred:
 - Vault Desktop UI.
