@@ -35,6 +35,7 @@ const commands = new Set([
   "state",
   "disconnect",
   "publish",
+  "link-vault-memory",
   "inbox",
   "claim",
   "update",
@@ -118,6 +119,14 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         priority: optionalHandoffPriority(parsed, "priority") ?? "normal",
         urgent: parsed.options.has("urgent")
       });
+
+    case "link-vault-memory":
+      return services.handoffs.linkVaultMemoryFromSession(
+        requiredOption(parsed, "handoff-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        requiredOption(parsed, "vault-memory-uid")
+      );
 
     case "inbox":
       return services.handoffs.listInbox({

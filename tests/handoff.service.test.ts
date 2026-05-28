@@ -169,6 +169,69 @@ describe("HandoffService", () => {
     );
   });
 
+  it("links Vault memory to an existing handoff only for the source session owner", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Link a saved Vault brief.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      sourceSessionUid: codex.sessionUid
+    });
+    now = new Date("2026-05-28T11:02:15.000Z");
+
+    expect(() =>
+      handoffs.linkVaultMemoryFromSession(
+        handoff.handoffUid,
+        claude.sessionUid,
+        claude.sessionToken,
+        "vm_late_full_brief"
+      )
+    ).toThrow(/source session/i);
+    expect(() =>
+      handoffs.linkVaultMemoryFromSession(
+        handoff.handoffUid,
+        codex.sessionUid,
+        "wrong-token",
+        "vm_late_full_brief"
+      )
+    ).toThrow(/invalid session token/i);
+
+    const linked = handoffs.linkVaultMemoryFromSession(
+      handoff.handoffUid,
+      codex.sessionUid,
+      codex.sessionToken,
+      "vm_late_full_brief"
+    );
+
+    expect(linked).toMatchObject({
+      vaultMemoryUid: "vm_late_full_brief",
+      updatedAt: "2026-05-28T11:02:15.000Z"
+    });
+    expect(events.listEvents({ handoffUid: handoff.handoffUid }).at(-1)).toMatchObject({
+      eventType: "handoff.vault_memory_linked",
+      sessionUid: codex.sessionUid,
+      payload: {
+        vaultMemoryUid: "vm_late_full_brief"
+      }
+    });
+  });
+
+  it("does not publicly link Vault memory when a handoff has no source session owner", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Anonymous source",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+
+    expect(() =>
+      handoffs.linkVaultMemoryFromSession(
+        handoff.handoffUid,
+        codex.sessionUid,
+        codex.sessionToken,
+        "vm_unowned_brief"
+      )
+    ).toThrow(/no source session owner/i);
+  });
+
   it("marks a claimed handoff as awaiting user confirmation", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Ask the user",

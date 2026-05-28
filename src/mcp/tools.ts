@@ -21,6 +21,7 @@ export const vaultCollabToolNames = [
   "vault_collab_disconnect_session",
   "vault_collab_publish_handoff",
   "vault_collab_publish_handoff_with_vault_memory",
+  "vault_collab_link_vault_memory",
   "vault_collab_list_inbox",
   "vault_collab_get_handoff",
   "vault_collab_claim_handoff",
@@ -102,6 +103,12 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     name: "vault_collab_publish_handoff_with_vault_memory",
     title: "Publish Handoff With Vault Memory",
     description: "Save a full handoff brief to Vault memory, then publish the linked local handoff.",
+    inputSchema: openInputSchema
+  },
+  {
+    name: "vault_collab_link_vault_memory",
+    title: "Link Vault Memory",
+    description: "Link an existing handoff to an existing Vault memory item as the source session owner.",
     inputSchema: openInputSchema
   },
   {
@@ -244,6 +251,13 @@ export function createVaultCollabMcpTools(
         nextSteps: optionalStringArray(args, "nextSteps", "next_steps") ?? undefined
       });
     },
+    vault_collab_link_vault_memory: (args) =>
+      handoffs.linkVaultMemoryFromSession(
+        requiredString(args, "handoffUid", "handoff_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        requiredString(args, "vaultMemoryUid", "vault_memory_uid")
+      ),
     vault_collab_list_inbox: (args) =>
       handoffs.listInbox({
         sourceProject: optionalString(args, "sourceProject", "source_project"),

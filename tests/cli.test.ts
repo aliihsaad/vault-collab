@@ -105,6 +105,24 @@ describe("vault-collab CLI", () => {
       urgent: true
     });
 
+    const linked = parseJson<{ vaultMemoryUid: string | null }>(
+      await runCli([
+        "link-vault-memory",
+        "--db",
+        dbPath,
+        "--handoff-uid",
+        published.handoffUid,
+        "--session-uid",
+        codex.sessionUid,
+        "--session-token",
+        codex.sessionToken,
+        "--vault-memory-uid",
+        "vm_cli_full_brief"
+      ])
+    );
+
+    expect(linked.vaultMemoryUid).toBe("vm_cli_full_brief");
+
     const inbox = parseJson<Array<{ handoffUid: string; claimToken?: string }>>(
       await runCli(["inbox", "--db", dbPath, "--target-project", "Vault Collab"])
     );

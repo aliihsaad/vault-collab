@@ -42,6 +42,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_disconnect_session",
       "vault_collab_publish_handoff",
       "vault_collab_publish_handoff_with_vault_memory",
+      "vault_collab_link_vault_memory",
       "vault_collab_list_inbox",
       "vault_collab_get_handoff",
       "vault_collab_claim_handoff",
@@ -108,6 +109,17 @@ describe("Vault Collab MCP tools", () => {
     );
 
     expect(published.status).toBe("available");
+
+    const linked = structured<{ vaultMemoryUid: string | null }>(
+      await tools.callTool("vault_collab_link_vault_memory", {
+        handoffUid: published.handoffUid,
+        sessionUid: codex.sessionUid,
+        sessionToken: codex.sessionToken,
+        vaultMemoryUid: "vm_mcp_existing_brief"
+      })
+    );
+
+    expect(linked.vaultMemoryUid).toBe("vm_mcp_existing_brief");
 
     const claimed = structured<{ status: string; claimedBySessionUid: string }>(
       await tools.callTool("vault_collab_claim_handoff", {

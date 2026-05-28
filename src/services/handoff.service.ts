@@ -172,7 +172,11 @@ export class HandoffService {
     return row ? this.mapRow(row) : null;
   }
 
-  linkVaultMemory(handoffUid: string, vaultMemoryUid: string): HandoffRecord {
+  linkVaultMemory(
+    handoffUid: string,
+    vaultMemoryUid: string,
+    sessionUid: string | null = null
+  ): HandoffRecord {
     const now = this.now();
     const result = this.db
       .prepare(
@@ -191,12 +195,36 @@ export class HandoffService {
     this.events.recordEvent({
       eventType: "handoff.vault_memory_linked",
       handoffUid,
+      sessionUid,
       payload: {
         vaultMemoryUid
       }
     });
 
     return this.requireHandoff(handoffUid);
+  }
+
+  linkVaultMemoryFromSession(
+    handoffUid: string,
+    sessionUid: string,
+    sessionToken: string,
+    vaultMemoryUid: string
+  ): HandoffRecord {
+    this.assertSessionOwner(sessionUid, sessionToken);
+    const handoff = this.findHandoffRow(handoffUid);
+    if (!handoff) {
+      throw new Error(`Handoff not found: ${handoffUid}`);
+    }
+
+    if (!handoff.source_session_uid) {
+      throw new Error("Handoff has no source session owner");
+    }
+
+    if (handoff.source_session_uid !== sessionUid) {
+      throw new Error("Vault memory can only be linked by the source session owner");
+    }
+
+    return this.linkVaultMemory(handoffUid, vaultMemoryUid, sessionUid);
   }
 
   claimHandoff(handoffUid: string, sessionUid: string, sessionToken: string): HandoffRecord {
