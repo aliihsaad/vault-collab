@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import { createCollabDatabase } from "./database/connection.js";
 import { EventService } from "./services/event.service.js";
@@ -30,6 +31,7 @@ interface Services {
 }
 
 const commands = new Set([
+  "check",
   "register",
   "heartbeat",
   "sessions",
@@ -71,6 +73,16 @@ export async function runCli(argv: string[] = process.argv.slice(2)): Promise<Cl
 
 function execute(parsed: ParsedCommand, services: Services): unknown {
   switch (parsed.command) {
+    case "check":
+      return {
+        ok: true,
+        databasePath: requiredOption(parsed, "db"),
+        storage: "sqlite",
+        mode: "local-first",
+        cliBin: "vault-collab",
+        mcpBin: "vault-collab-mcp"
+      };
+
     case "register":
       return services.sessions.registerSession({
         displayName: requiredOption(parsed, "display-name"),

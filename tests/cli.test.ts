@@ -29,6 +29,29 @@ describe("vault-collab CLI", () => {
     // SQLite files stay in the OS temp directory for post-failure inspection.
   });
 
+  it("runs a local install check without starting hidden work", async () => {
+    const check = parseJson<{
+      ok: boolean;
+      databasePath: string;
+      storage: string;
+      mode: string;
+      cliBin: string;
+      mcpBin: string;
+    }>(await runCli(["check", "--db", dbPath]));
+
+    expect(check).toEqual({
+      ok: true,
+      databasePath: dbPath,
+      storage: "sqlite",
+      mode: "local-first",
+      cliBin: "vault-collab",
+      mcpBin: "vault-collab-mcp"
+    });
+
+    const sessions = parseJson<unknown[]>(await runCli(["sessions", "--db", dbPath]));
+    expect(sessions).toEqual([]);
+  });
+
   it("runs the session and handoff smoke workflow through JSON commands", async () => {
     const codex = parseJson<{ sessionUid: string; sessionToken: string }>(
       await runCli([

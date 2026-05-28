@@ -57,7 +57,32 @@ mutation, no background auto-execution, and no destructive cleanup path.
 - npm.
 - A local filesystem path for the SQLite database.
 
-## Install
+## Install For Normal Users
+
+No source checkout is required. This command installs Vault Collab from GitHub
+through npm's exec cache, opens or creates the local SQLite database, and prints
+a JSON health check. It does not start background work or run hidden agents.
+
+Windows PowerShell:
+
+```powershell
+$db = Join-Path $env:LOCALAPPDATA "TheVault\vault-collab.db"; New-Item -ItemType Directory -Force -Path (Split-Path $db) | Out-Null; npm exec --yes --package github:aliihsaad/vault-collab -- vault-collab check --db $db
+```
+
+The `$db` value is built from the current user's `LOCALAPPDATA`, so the actual
+path varies per machine. The npm separator belongs before the executable name:
+`npm exec --yes --package github:aliihsaad/vault-collab -- vault-collab ...`.
+
+The MCP server can be started from GitHub with the same database path:
+
+```powershell
+$db = Join-Path $env:LOCALAPPDATA "TheVault\vault-collab.db"; New-Item -ItemType Directory -Force -Path (Split-Path $db) | Out-Null; npm exec --yes --package github:aliihsaad/vault-collab -- vault-collab-mcp --db $db
+```
+
+## Development From A Local Checkout
+
+Local source checkout mode is for development. Normal users should use the
+GitHub npm exec command above.
 
 ```powershell
 npm install
@@ -72,7 +97,7 @@ npm run build
 npm run typecheck
 ```
 
-## CLI Quickstart
+## Developer CLI Quickstart
 
 The examples assume PowerShell from the repository root. Set paths from the
 current checkout so they work for any user:
