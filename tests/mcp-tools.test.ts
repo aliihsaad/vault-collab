@@ -7,6 +7,7 @@ import {
   vaultCollabToolNames,
   type VaultCollabToolResult
 } from "../src/mcp/tools.js";
+import type { VaultMemoryClient, VaultMemorySaveInput } from "../src/services/vault-link.service.js";
 
 function structured<T>(result: VaultCollabToolResult): T {
   expect(result.isError).toBeUndefined();
@@ -40,6 +41,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_list_sessions",
       "vault_collab_disconnect_session",
       "vault_collab_publish_handoff",
+      "vault_collab_publish_handoff_with_vault_memory",
       "vault_collab_list_inbox",
       "vault_collab_get_handoff",
       "vault_collab_claim_handoff",
@@ -204,5 +206,66 @@ describe("Vault Collab MCP tools", () => {
       handoffUid: published.handoffUid,
       status: "available"
     });
+  });
+
+  it("publishes a Vault-linked handoff through the optional MCP tool", async () => {
+    const saves: VaultMemorySaveInput[] = [];
+    const vaultMemoryClient: VaultMemoryClient = {
+      saveMemory: async (input) => {
+        saves.push(input);
+        return { itemUid: "vm_mcp_linked_brief" };
+      }
+    };
+    const tools = createVaultCollabMcpTools({ dbPath, vaultMemoryClient });
+    closeTools = tools.close;
+
+    const codex = structured<{ sessionUid: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Codex",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+
+    const linked = structured<{ handoffUid: string; vaultMemoryUid: string | null }>(
+      await tools.callTool("vault_collab_publish_handoff_with_vault_memory", {
+        shortPrompt: "Publish from MCP with a full Vault brief.",
+        fullBrief: "This full brief is saved to Vault memory before the handoff appears locally.",
+        sourceProject: "Vault Collab",
+        targetProject: "Vault Collab",
+        sourceSessionUid: codex.sessionUid,
+        relatedFiles: ["src/mcp/tools.ts"],
+        vaultTitle: "Handoff: MCP linked publish",
+        vaultSubject: "Vault Collab MCP linked publish",
+        keywords: ["vault-collab", "mcp", "vault-link"],
+        tags: ["handoff", "mcp"],
+        nextSteps: ["Claim this from another MCP client"]
+      })
+    );
+
+    expect(saves).toHaveLength(1);
+    expect(saves[0]).toMatchObject({
+      title: "Handoff: MCP linked publish",
+      project: "Vault Collab",
+      memoryType: "handoff",
+      subject: "Vault Collab MCP linked publish",
+      summary: "Publish from MCP with a full Vault brief.",
+      sourceApp: "vault-collab"
+    });
+    expect(saves[0].content).toContain(
+      "This full brief is saved to Vault memory before the handoff appears locally."
+    );
+    expect(linked).toMatchObject({
+      vaultMemoryUid: "vm_mcp_linked_brief"
+    });
+
+    const got = structured<{ vaultMemoryUid: string | null }>(
+      await tools.callTool("vault_collab_get_handoff", {
+        handoffUid: linked.handoffUid
+      })
+    );
+
+    expect(got.vaultMemoryUid).toBe("vm_mcp_linked_brief");
   });
 });

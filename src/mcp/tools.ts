@@ -4,6 +4,7 @@ import { createCollabDatabase, type CollabDatabase } from "../database/connectio
 import { EventService } from "../services/event.service.js";
 import { HandoffService } from "../services/handoff.service.js";
 import { SessionService } from "../services/session.service.js";
+import { VaultLinkedHandoffService, type VaultMemoryClient } from "../services/vault-link.service.js";
 import type {
   ClientType,
   HandoffPriority,
@@ -19,6 +20,7 @@ export const vaultCollabToolNames = [
   "vault_collab_list_sessions",
   "vault_collab_disconnect_session",
   "vault_collab_publish_handoff",
+  "vault_collab_publish_handoff_with_vault_memory",
   "vault_collab_list_inbox",
   "vault_collab_get_handoff",
   "vault_collab_claim_handoff",
@@ -53,6 +55,7 @@ export interface VaultCollabMcpTools {
 export interface CreateVaultCollabMcpToolsOptions {
   dbPath?: string;
   db?: CollabDatabase;
+  vaultMemoryClient?: VaultMemoryClient;
   clock?: () => Date;
 }
 
@@ -93,6 +96,12 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     name: "vault_collab_publish_handoff",
     title: "Publish Handoff",
     description: "Publish a local handoff into the target project inbox.",
+    inputSchema: openInputSchema
+  },
+  {
+    name: "vault_collab_publish_handoff_with_vault_memory",
+    title: "Publish Handoff With Vault Memory",
+    description: "Save a full handoff brief to Vault memory, then publish the linked local handoff.",
     inputSchema: openInputSchema
   },
   {
@@ -153,8 +162,14 @@ export function createVaultCollabMcpTools(
   const events = new EventService(db, options.clock);
   const sessions = new SessionService(db, events, options.clock);
   const handoffs = new HandoffService(db, events, options.clock);
+  const linkedHandoffs = options.vaultMemoryClient
+    ? new VaultLinkedHandoffService(handoffs, options.vaultMemoryClient)
+    : null;
 
-  const handlers: Record<VaultCollabToolName, (args: Record<string, unknown>) => unknown> = {
+  const handlers: Record<
+    VaultCollabToolName,
+    (args: Record<string, unknown>) => unknown | Promise<unknown>
+  > = {
     vault_collab_register_session: (args) =>
       sessions.registerSession({
         displayName: requiredString(args, "displayName", "display_name"),
@@ -202,6 +217,33 @@ export function createVaultCollabMcpTools(
         priority: optionalHandoffPriority(args, "priority") ?? "normal",
         urgent: optionalBoolean(args, "urgent") ?? false
       }),
+    vault_collab_publish_handoff_with_vault_memory: (args) => {
+      if (!linkedHandoffs) {
+        throw new Error("Vault memory client is not configured for linked handoff publishing");
+      }
+
+      return linkedHandoffs.publishHandoffWithVaultMemory({
+        shortPrompt: requiredString(args, "shortPrompt", "short_prompt"),
+        fullBrief: requiredString(args, "fullBrief", "full_brief"),
+        sourceProject: requiredString(args, "sourceProject", "source_project"),
+        targetProject: requiredString(args, "targetProject", "target_project"),
+        relatedProjects: optionalStringArray(args, "relatedProjects", "related_projects") ?? [],
+        relatedFiles: optionalStringArray(args, "relatedFiles", "related_files") ?? [],
+        sourceSessionUid: optionalString(args, "sourceSessionUid", "source_session_uid") ?? null,
+        suggestedSessionUid:
+          optionalString(args, "suggestedSessionUid", "suggested_session_uid") ?? null,
+        suggestedClientType:
+          optionalClientType(args, "suggestedClientType", "suggested_client_type") ?? null,
+        priority: optionalHandoffPriority(args, "priority") ?? "normal",
+        urgent: optionalBoolean(args, "urgent") ?? false,
+        vaultProject: optionalString(args, "vaultProject", "vault_project"),
+        vaultTitle: optionalString(args, "vaultTitle", "vault_title"),
+        vaultSubject: optionalString(args, "vaultSubject", "vault_subject"),
+        keywords: optionalStringArray(args, "keywords") ?? undefined,
+        tags: optionalStringArray(args, "tags") ?? undefined,
+        nextSteps: optionalStringArray(args, "nextSteps", "next_steps") ?? undefined
+      });
+    },
     vault_collab_list_inbox: (args) =>
       handoffs.listInbox({
         sourceProject: optionalString(args, "sourceProject", "source_project"),
@@ -261,7 +303,7 @@ export function createVaultCollabMcpTools(
       }
 
       try {
-        return successResult(handlers[name](args));
+        return successResult(await handlers[name](args));
       } catch (error) {
         return errorResult(error instanceof Error ? error.message : String(error));
       }

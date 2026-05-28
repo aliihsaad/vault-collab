@@ -88,6 +88,16 @@ export interface PublishHandoffInput {
   urgent?: boolean;
 }
 
+export interface PublishVaultLinkedHandoffInput extends PublishHandoffInput {
+  fullBrief: string;
+  vaultProject?: string;
+  vaultTitle?: string;
+  vaultSubject?: string;
+  keywords?: string[];
+  tags?: string[];
+  nextSteps?: string[];
+}
+
 export interface HandoffRecord {
   handoffUid: string;
   vaultMemoryUid: string | null;

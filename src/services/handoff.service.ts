@@ -172,6 +172,33 @@ export class HandoffService {
     return row ? this.mapRow(row) : null;
   }
 
+  linkVaultMemory(handoffUid: string, vaultMemoryUid: string): HandoffRecord {
+    const now = this.now();
+    const result = this.db
+      .prepare(
+        `
+        UPDATE handoffs
+        SET vault_memory_uid = ?, updated_at = ?
+        WHERE handoff_uid = ?
+      `
+      )
+      .run(vaultMemoryUid, now, handoffUid);
+
+    if (result.changes !== 1) {
+      throw new Error(`Handoff not found: ${handoffUid}`);
+    }
+
+    this.events.recordEvent({
+      eventType: "handoff.vault_memory_linked",
+      handoffUid,
+      payload: {
+        vaultMemoryUid
+      }
+    });
+
+    return this.requireHandoff(handoffUid);
+  }
+
   claimHandoff(handoffUid: string, sessionUid: string, sessionToken: string): HandoffRecord {
     this.assertSessionOwner(sessionUid, sessionToken);
     const now = this.now();
