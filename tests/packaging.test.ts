@@ -41,4 +41,14 @@ describe("GitHub npm execution packaging", () => {
       readme.indexOf("## Development From A Local Checkout")
     );
   });
+
+  it("packages runtime artifacts without dev-only source and test files", () => {
+    const npmignore = readText(".npmignore");
+    const ignoredPaths = npmignore.split(/\r?\n/);
+
+    expect(npmignore).toContain("src/");
+    expect(npmignore).toContain("tests/");
+    expect(npmignore).toContain("docs/");
+    expect(ignoredPaths).not.toContain("dist/");
+  });
 });

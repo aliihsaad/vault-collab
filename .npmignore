@@ -1,0 +1,11 @@
+src/
+tests/
+docs/
+coverage/
+dist/**/*.map
+*.tsbuildinfo
+*.db
+*.log
+tsconfig.json
+tsconfig.build.json
+vitest.config.ts
