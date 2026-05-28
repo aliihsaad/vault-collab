@@ -6,7 +6,7 @@ import { VaultLinkedHandoffService, type VaultMemoryClient } from "../src/servic
 import type { JsonRecord, RegisteredSession } from "../src/types.js";
 import { SessionService } from "../src/services/session.service.js";
 
-const workspacePath = "C:\\Users\\Mini\\Desktop\\Projects\\vault-collab";
+const workspacePath = "C:\\workspace\\vault-collab";
 
 interface CapturedMemorySave {
   title: string;

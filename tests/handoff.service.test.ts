@@ -5,7 +5,7 @@ import { HandoffService } from "../src/services/handoff.service.js";
 import { SessionService } from "../src/services/session.service.js";
 import type { RegisteredSession } from "../src/types.js";
 
-const workspacePath = "C:\\Users\\Mini\\Desktop\\Projects\\vault-collab";
+const workspacePath = "C:\\workspace\\vault-collab";
 
 describe("HandoffService", () => {
   let db: CollabDatabase;

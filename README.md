@@ -74,16 +74,18 @@ npm run typecheck
 
 ## CLI Quickstart
 
-Use an explicit database path:
+The examples assume PowerShell from the repository root. Set paths from the
+current checkout so they work for any user:
 
 ```powershell
-$db = "C:\Users\Mini\Desktop\Projects\vault-collab\vault-collab.db"
+$workspace = (Get-Location).Path
+$db = Join-Path $workspace ".vault-collab.db"
 ```
 
 Register a session:
 
 ```powershell
-node dist\cli.js register --db $db --display-name "Codex" --client-type codex --project "Vault Collab" --workspace-path "C:\Users\Mini\Desktop\Projects\vault-collab" --capability handoffs=true
+node dist\cli.js register --db $db --display-name "Codex" --client-type codex --project "Vault Collab" --workspace-path $workspace --capability handoffs=true
 ```
 
 The response includes a `sessionUid` and `sessionToken`. Keep the token private.
@@ -133,13 +135,14 @@ npm run build
 Start the server with a database path:
 
 ```powershell
-node dist\mcp\server.js --db C:\path\to\vault-collab.db
+$db = Join-Path (Get-Location).Path ".vault-collab.db"
+node dist\mcp\server.js --db $db
 ```
 
 Or use an environment variable:
 
 ```powershell
-$env:VAULT_COLLAB_DB = "C:\path\to\vault-collab.db"
+$env:VAULT_COLLAB_DB = (Join-Path (Get-Location).Path ".vault-collab.db")
 node dist\mcp\server.js
 ```
 

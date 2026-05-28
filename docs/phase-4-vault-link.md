@@ -33,16 +33,18 @@ Build first:
 npm run build
 ```
 
-Use an explicit local SQLite path for every command:
+The examples assume PowerShell from the repository root. Set paths from the
+current checkout so they work for any user:
 
 ```powershell
-$db = "C:\Users\Mini\Desktop\Projects\vault-collab\vault-collab.db"
+$workspace = (Get-Location).Path
+$db = Join-Path $workspace ".vault-collab.db"
 ```
 
 Register the source session:
 
 ```powershell
-node dist\cli.js register --db $db --display-name "Codex" --client-type codex --project "Vault Collab" --workspace-path "C:\Users\Mini\Desktop\Projects\vault-collab" --capability handoffs=true
+node dist\cli.js register --db $db --display-name "Codex" --client-type codex --project "Vault Collab" --workspace-path $workspace --capability handoffs=true
 ```
 
 The response includes a `sessionUid` and `sessionToken`. Keep the token private;
@@ -85,13 +87,14 @@ Event output is read-only and does not include session tokens.
 Start the standalone MCP server after building:
 
 ```powershell
-node dist\mcp\server.js --db C:\Users\Mini\Desktop\Projects\vault-collab\vault-collab.db
+$db = Join-Path (Get-Location).Path ".vault-collab.db"
+node dist\mcp\server.js --db $db
 ```
 
 Equivalent environment-based startup:
 
 ```powershell
-$env:VAULT_COLLAB_DB = "C:\Users\Mini\Desktop\Projects\vault-collab\vault-collab.db"
+$env:VAULT_COLLAB_DB = (Join-Path (Get-Location).Path ".vault-collab.db")
 node dist\mcp\server.js
 ```
 
@@ -153,7 +156,7 @@ memory first, then publishes the linked local handoff. It requires a
 import { createVaultCollabMcpTools } from "./dist/mcp/tools.js";
 
 const tools = createVaultCollabMcpTools({
-  dbPath: "C:\\Users\\Mini\\Desktop\\Projects\\vault-collab\\vault-collab.db",
+  dbPath: process.env.VAULT_COLLAB_DB ?? ".vault-collab.db",
   vaultMemoryClient: {
     async saveMemory(input) {
       // Host-specific adapter calls Vault memory here.

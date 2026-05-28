@@ -3,7 +3,7 @@ import { createCollabDatabase, type CollabDatabase } from "../src/database/conne
 import { EventService } from "../src/services/event.service.js";
 import { SessionService } from "../src/services/session.service.js";
 
-const workspacePath = "C:\\Users\\Mini\\Desktop\\Projects\\vault-collab";
+const workspacePath = "C:\\workspace\\vault-collab";
 
 describe("SessionService", () => {
   let db: CollabDatabase;
