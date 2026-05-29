@@ -427,6 +427,145 @@ describe("vault-collab CLI", () => {
     expect(JSON.stringify(events)).not.toContain(implementer.sessionToken);
   });
 
+  it("records session pings and permission-needed events through the CLI", async () => {
+    const coordinator = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Coordinator",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Worker",
+        "--client-type",
+        "claude-code",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+
+    const ping = parseJson<{ eventType: string; sessionUid: string }>(
+      await runCli([
+        "ping-session",
+        "--db",
+        dbPath,
+        "--target-session-uid",
+        worker.sessionUid,
+        "--actor-session-uid",
+        coordinator.sessionUid,
+        "--message",
+        "Check the inbox when active."
+      ])
+    );
+    const awaitingSession = parseJson<{ status: string; statusDetail: string }>(
+      await runCli([
+        "session-permission-request",
+        "--db",
+        dbPath,
+        "--session-uid",
+        worker.sessionUid,
+        "--session-token",
+        worker.sessionToken,
+        "--question",
+        "Allow filesystem write?",
+        "--requested-capability",
+        "filesystem-write",
+        "--command-preview",
+        "npm run build",
+        "--source",
+        "claude-code"
+      ])
+    );
+    const handoff = parseJson<{ handoffUid: string }>(
+      await runCli([
+        "publish",
+        "--db",
+        dbPath,
+        "--short-prompt",
+        "Needs permission",
+        "--source-project",
+        "Vault Collab",
+        "--target-project",
+        "Vault Collab"
+      ])
+    );
+    await runCli([
+      "claim",
+      "--db",
+      dbPath,
+      "--handoff-uid",
+      handoff.handoffUid,
+      "--session-uid",
+      worker.sessionUid,
+      "--session-token",
+      worker.sessionToken
+    ]);
+    const awaitingHandoff = parseJson<{ status: string; progressNote: string }>(
+      await runCli([
+        "handoff-permission-request",
+        "--db",
+        dbPath,
+        "--handoff-uid",
+        handoff.handoffUid,
+        "--session-uid",
+        worker.sessionUid,
+        "--session-token",
+        worker.sessionToken,
+        "--question",
+        "Allow network access?",
+        "--requested-capability",
+        "network",
+        "--command-preview",
+        "git push origin main",
+        "--source",
+        "claude-code"
+      ])
+    );
+    const permissionEvents = parseJson<Array<{ eventType: string }>>(
+      await runCli([
+        "events",
+        "--db",
+        dbPath,
+        "--session-uid",
+        worker.sessionUid,
+        "--event-type",
+        "session.permission_requested"
+      ])
+    );
+
+    expect(ping).toMatchObject({
+      eventType: "session.pinged",
+      sessionUid: worker.sessionUid
+    });
+    expect(awaitingSession).toMatchObject({
+      status: "awaiting_user",
+      statusDetail: "Allow filesystem write?"
+    });
+    expect(awaitingHandoff).toMatchObject({
+      status: "awaiting_user",
+      progressNote: "Allow network access?"
+    });
+    expect(permissionEvents.map((event) => event.eventType)).toEqual([
+      "session.permission_requested"
+    ]);
+    expect(JSON.stringify(permissionEvents)).not.toContain(worker.sessionToken);
+  });
+
   it("runs the agent, queue, and discussion workflow through flat JSON commands", async () => {
     const roles = parseJson<Array<{ role: string }>>(await runCli(["roles", "--db", dbPath]));
     expect(roles.map((role) => role.role)).toEqual([

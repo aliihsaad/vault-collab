@@ -10,6 +10,9 @@ Current scope:
   loss, requiring source/recovery-capable actor credentials plus reason,
   summary, and Vault memory evidence.
 - Read-only event history listing for inspectable session and handoff lifecycles.
+- Soft session pings (`session.pinged`) and explicit permission-needed events
+  (`session.permission_requested`, `handoff.permission_requested`) for
+  dashboard attention indicators without waking stopped agents.
 - Read-only selected handoff detail bundles containing the handoff, lifecycle
   events, and non-token related session snapshots.
 - JSON CLI smoke commands for the local session and handoff lifecycle.
@@ -46,6 +49,13 @@ bind sessions to agent profiles.
 Discussion messages are append-only and token-safe. Creating a discussion and
 adding messages requires a valid session owner token, but neither action claims,
 resolves, reassigns, or executes a handoff.
+
+Soft pings are attention events only. They are useful for dashboards and active
+polling agents, but they do not wake a dead process, auto-claim work, or execute
+commands. Permission requests update session/handoff state to `awaiting_user`
+and store the question in public detail fields so old read-only dashboards can
+degrade safely while newer dashboards count and highlight the dedicated event
+types.
 
 Recovery resolution is a provenance-preserving lifecycle path for operational
 dead ends caused by context compaction or client restart. It emits

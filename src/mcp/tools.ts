@@ -23,6 +23,8 @@ export const vaultCollabToolNames = [
   "vault_collab_register_session",
   "vault_collab_heartbeat_session",
   "vault_collab_update_session_state",
+  "vault_collab_ping_session",
+  "vault_collab_request_session_permission",
   "vault_collab_list_sessions",
   "vault_collab_disconnect_session",
   "vault_collab_list_agent_roles",
@@ -43,6 +45,7 @@ export const vaultCollabToolNames = [
   "vault_collab_claim_handoff",
   "vault_collab_update_handoff",
   "vault_collab_request_user_confirmation",
+  "vault_collab_request_handoff_permission",
   "vault_collab_resolve_handoff",
   "vault_collab_recover_handoff",
   "vault_collab_reopen_handoff",
@@ -226,6 +229,23 @@ const updateSessionStateInputSchema = ownedSessionInputSchema.extend({
   status_detail: optionalStringSchema("Snake_case alias for statusDetail.")
 });
 
+const pingSessionInputSchema = z.object({
+  targetSessionUid: optionalStringSchema("Required if target_session_uid is omitted. Target session identifier."),
+  target_session_uid: optionalStringSchema("Snake_case alias for targetSessionUid."),
+  actorSessionUid: optionalStringSchema("Optional session identifier for the actor sending the ping."),
+  actor_session_uid: optionalStringSchema("Snake_case alias for actorSessionUid."),
+  message: optionalStringSchema("Optional ping message.")
+});
+
+const permissionRequestInputSchema = ownedSessionInputSchema.extend({
+  question: requiredStringSchema("Permission question or approval prompt."),
+  requestedCapability: optionalStringSchema("Optional requested capability label."),
+  requested_capability: optionalStringSchema("Snake_case alias for requestedCapability."),
+  commandPreview: optionalStringSchema("Optional command or action preview."),
+  command_preview: optionalStringSchema("Snake_case alias for commandPreview."),
+  source: optionalStringSchema("Optional client/source label.")
+});
+
 const listSessionsInputSchema = z.object({
   project: optionalStringSchema("Optional project filter."),
   clientType: clientTypeSchema.describe("Optional client type filter.").optional(),
@@ -384,7 +404,9 @@ const listEventsInputSchema = z.object({
   handoffUid: optionalStringSchema("Optional handoff event filter."),
   handoff_uid: optionalStringSchema("Snake_case alias for handoffUid."),
   sessionUid: optionalStringSchema("Optional session event filter."),
-  session_uid: optionalStringSchema("Snake_case alias for sessionUid.")
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
+  eventType: optionalStringSchema("Optional event type filter."),
+  event_type: optionalStringSchema("Snake_case alias for eventType.")
 });
 
 const updateHandoffInputSchema = ownedHandoffInputSchema.extend({
@@ -395,6 +417,15 @@ const updateHandoffInputSchema = ownedHandoffInputSchema.extend({
 
 const requestUserConfirmationInputSchema = ownedHandoffInputSchema.extend({
   question: requiredStringSchema("Question that needs user confirmation.")
+});
+
+const requestHandoffPermissionInputSchema = ownedHandoffInputSchema.extend({
+  question: requiredStringSchema("Permission question or approval prompt."),
+  requestedCapability: optionalStringSchema("Optional requested capability label."),
+  requested_capability: optionalStringSchema("Snake_case alias for requestedCapability."),
+  commandPreview: optionalStringSchema("Optional command or action preview."),
+  command_preview: optionalStringSchema("Snake_case alias for commandPreview."),
+  source: optionalStringSchema("Optional client/source label.")
 });
 
 const resolveHandoffInputSchema = ownedHandoffInputSchema.extend({
@@ -437,6 +468,18 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     title: "Update Session State",
     description: "Update a session status and detail when the caller presents the owner token.",
     inputSchema: updateSessionStateInputSchema
+  },
+  {
+    name: "vault_collab_ping_session",
+    title: "Ping Session",
+    description: "Record a soft attention ping for a session without waking or auto-claiming.",
+    inputSchema: pingSessionInputSchema
+  },
+  {
+    name: "vault_collab_request_session_permission",
+    title: "Request Session Permission",
+    description: "Mark a session as awaiting user permission with a token-safe event.",
+    inputSchema: permissionRequestInputSchema
   },
   {
     name: "vault_collab_list_sessions",
@@ -559,6 +602,12 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: requestUserConfirmationInputSchema
   },
   {
+    name: "vault_collab_request_handoff_permission",
+    title: "Request Handoff Permission",
+    description: "Mark a claimed handoff as awaiting user permission with a token-safe event.",
+    inputSchema: requestHandoffPermissionInputSchema
+  },
+  {
     name: "vault_collab_resolve_handoff",
     title: "Resolve Handoff",
     description: "Resolve a claimed handoff with a summary.",
@@ -631,6 +680,23 @@ export function createVaultCollabMcpTools(
         requiredString(args, "sessionToken", "session_token"),
         requiredSessionStatus(args, "status"),
         optionalString(args, "detail", "statusDetail", "status_detail") ?? null
+      ),
+    vault_collab_ping_session: (args) =>
+      sessions.pingSession(requiredString(args, "targetSessionUid", "target_session_uid"), {
+        actorSessionUid: optionalString(args, "actorSessionUid", "actor_session_uid") ?? null,
+        message: optionalString(args, "message") ?? null
+      }),
+    vault_collab_request_session_permission: (args) =>
+      sessions.requestSessionPermission(
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        {
+          question: requiredString(args, "question"),
+          requestedCapability:
+            optionalString(args, "requestedCapability", "requested_capability") ?? null,
+          commandPreview: optionalString(args, "commandPreview", "command_preview") ?? null,
+          source: optionalString(args, "source") ?? null
+        }
       ),
     vault_collab_list_sessions: (args) =>
       sessions.listSessions({
@@ -781,7 +847,8 @@ export function createVaultCollabMcpTools(
     vault_collab_list_events: (args) =>
       events.listEvents({
         handoffUid: optionalString(args, "handoffUid", "handoff_uid"),
-        sessionUid: optionalString(args, "sessionUid", "session_uid")
+        sessionUid: optionalString(args, "sessionUid", "session_uid"),
+        eventType: optionalString(args, "eventType", "event_type")
       }),
     vault_collab_claim_handoff: (args) =>
       handoffs.claimHandoff(
@@ -803,6 +870,19 @@ export function createVaultCollabMcpTools(
         requiredString(args, "sessionUid", "session_uid"),
         requiredString(args, "sessionToken", "session_token"),
         requiredString(args, "question")
+      ),
+    vault_collab_request_handoff_permission: (args) =>
+      handoffs.requestHandoffPermission(
+        requiredString(args, "handoffUid", "handoff_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        {
+          question: requiredString(args, "question"),
+          requestedCapability:
+            optionalString(args, "requestedCapability", "requested_capability") ?? null,
+          commandPreview: optionalString(args, "commandPreview", "command_preview") ?? null,
+          source: optionalString(args, "source") ?? null
+        }
       ),
     vault_collab_resolve_handoff: (args) =>
       handoffs.resolveHandoff(

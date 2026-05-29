@@ -22,6 +22,8 @@ Vault Collab is an early standalone core. The current implementation covers:
 - MCP stdio server exposing neutral `vault_collab_*` tools.
 - Optional Vault memory links for full handoff briefs.
 - Read-only event history for session and handoff lifecycle inspection.
+- Soft session pings and explicit permission-needed events for dashboard
+  attention indicators.
 - Durable provider-neutral agent profiles with advisory role metadata.
 - Optional session binding to an agent profile.
 - Labeled and ordered handoff queues through `queueKey`, `labels`,
@@ -178,12 +180,31 @@ capability such as `handoffRecovery=true`, and the event history records the
 previous claim owner, previous status, reason, summary, and evidence memory UID
 without exposing tokens.
 
+Ping a session and record permission-needed attention states:
+
+```powershell
+node dist\cli.js ping-session --db $db --target-session-uid vc_sess_... --actor-session-uid vc_sess_... --message "Please check the inbox when active."
+
+node dist\cli.js session-permission-request --db $db --session-uid vc_sess_... --session-token ... --question "Allow network access for git push?" --requested-capability network --command-preview "git push origin main" --source codex
+
+node dist\cli.js handoff-permission-request --db $db --handoff-uid vc_handoff_... --session-uid vc_sess_... --session-token ... --question "Allow filesystem write?" --requested-capability filesystem-write --command-preview "npm run build" --source claude-code
+```
+
+`ping-session` records a `session.pinged` event only. It does not wake a stopped
+process, claim work, or execute anything. Permission-request commands move the
+session or handoff to `awaiting_user`, store the question in the public detail
+field, and emit token-safe `session.permission_requested` or
+`handoff.permission_requested` events. Agents should record these events before
+triggering a human approval prompt when practical, then update state after the
+approval or denial.
+
 Inspect event history:
 
 ```powershell
 node dist\cli.js handoff --db $db --handoff-uid vc_handoff_...
 node dist\cli.js events --db $db --handoff-uid vc_handoff_...
 node dist\cli.js events --db $db --session-uid vc_sess_...
+node dist\cli.js events --db $db --session-uid vc_sess_... --event-type session.permission_requested
 ```
 
 Create and inspect an append-only discussion:
@@ -223,6 +244,8 @@ Available MCP tools include:
 - `vault_collab_register_session`
 - `vault_collab_heartbeat_session`
 - `vault_collab_update_session_state`
+- `vault_collab_ping_session`
+- `vault_collab_request_session_permission`
 - `vault_collab_list_sessions`
 - `vault_collab_disconnect_session`
 - `vault_collab_list_agent_roles`
@@ -243,6 +266,7 @@ Available MCP tools include:
 - `vault_collab_claim_handoff`
 - `vault_collab_update_handoff`
 - `vault_collab_request_user_confirmation`
+- `vault_collab_request_handoff_permission`
 - `vault_collab_resolve_handoff`
 - `vault_collab_recover_handoff`
 - `vault_collab_reopen_handoff`

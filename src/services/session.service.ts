@@ -3,7 +3,10 @@ import type { CollabDatabase } from "../database/connection.js";
 import type { EventService } from "./event.service.js";
 import type {
   ClientType,
+  EventRecord,
   JsonRecord,
+  PermissionRequestInput,
+  PingSessionInput,
   RegisterSessionInput,
   RegisteredSession,
   SessionFilters,
@@ -163,6 +166,53 @@ export class SessionService {
     return this.requireSession(sessionUid);
   }
 
+  pingSession(targetSessionUid: string, input: PingSessionInput = {}): EventRecord {
+    if (!this.findSessionRow(targetSessionUid)) {
+      throw new Error(`Session not found: ${targetSessionUid}`);
+    }
+
+    const createdAt = this.now();
+    return this.events.recordEvent({
+      eventType: "session.pinged",
+      sessionUid: targetSessionUid,
+      payload: {
+        actorSessionUid: input.actorSessionUid ?? null,
+        message: input.message ?? null,
+        createdAt
+      }
+    });
+  }
+
+  requestSessionPermission(
+    sessionUid: string,
+    sessionToken: string,
+    input: PermissionRequestInput
+  ): RegisteredSession {
+    this.assertNonEmpty(input.question, "Permission question");
+    this.assertOwnedSession(sessionUid, sessionToken);
+    const now = this.now();
+
+    this.db
+      .prepare(
+        `
+        UPDATE sessions
+        SET status = ?, status_detail = ?, updated_at = ?
+        WHERE session_uid = ?
+      `
+      )
+      .run("awaiting_user", input.question, now, sessionUid);
+
+    this.events.recordEvent({
+      eventType: "session.permission_requested",
+      sessionUid,
+      payload: {
+        permissionRequest: this.permissionRequestPayload(input, now)
+      }
+    });
+
+    return this.requireSession(sessionUid);
+  }
+
   disconnectSession(sessionUid: string, sessionToken: string): RegisteredSession {
     this.assertOwnedSession(sessionUid, sessionToken);
     const now = this.now();
@@ -236,6 +286,25 @@ export class SessionService {
     }
 
     return row;
+  }
+
+  private assertNonEmpty(value: string, label: string): void {
+    if (value.trim() === "") {
+      throw new Error(`${label} cannot be empty`);
+    }
+  }
+
+  private permissionRequestPayload(
+    input: PermissionRequestInput,
+    createdAt: string
+  ): JsonRecord {
+    return {
+      question: input.question,
+      requestedCapability: input.requestedCapability ?? null,
+      commandPreview: input.commandPreview ?? null,
+      source: input.source ?? "agent",
+      createdAt
+    };
   }
 
   private requireSession(sessionUid: string): RegisteredSession {

@@ -7,6 +7,8 @@ import type {
   HandoffPriority,
   HandoffRecord,
   HandoffStatus,
+  JsonRecord,
+  PermissionRequestInput,
   PublishHandoffInput,
   RecoverHandoffInput,
   UpdateHandoffMetadataInput
@@ -441,6 +443,38 @@ export class HandoffService {
     return this.requireHandoff(handoffUid);
   }
 
+  requestHandoffPermission(
+    handoffUid: string,
+    sessionUid: string,
+    sessionToken: string,
+    input: PermissionRequestInput
+  ): HandoffRecord {
+    this.assertNonEmpty(input.question, "Permission question");
+    this.assertClaimOwner(handoffUid, sessionUid, sessionToken);
+    const now = this.now();
+
+    this.db
+      .prepare(
+        `
+        UPDATE handoffs
+        SET status = ?, progress_note = ?, updated_at = ?
+        WHERE handoff_uid = ?
+      `
+      )
+      .run("awaiting_user", input.question, now, handoffUid);
+
+    this.events.recordEvent({
+      eventType: "handoff.permission_requested",
+      handoffUid,
+      sessionUid,
+      payload: {
+        permissionRequest: this.permissionRequestPayload(input, now)
+      }
+    });
+
+    return this.requireHandoff(handoffUid);
+  }
+
   releaseHandoff(
     handoffUid: string,
     sessionUid: string,
@@ -728,6 +762,19 @@ export class HandoffService {
     if (value.trim() === "") {
       throw new Error(`${label} cannot be empty`);
     }
+  }
+
+  private permissionRequestPayload(
+    input: PermissionRequestInput,
+    createdAt: string
+  ): JsonRecord {
+    return {
+      question: input.question,
+      requestedCapability: input.requestedCapability ?? null,
+      commandPreview: input.commandPreview ?? null,
+      source: input.source ?? "agent",
+      createdAt
+    };
   }
 
   private requireHandoff(handoffUid: string): HandoffRecord {

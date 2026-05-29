@@ -46,6 +46,8 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_register_session",
       "vault_collab_heartbeat_session",
       "vault_collab_update_session_state",
+      "vault_collab_ping_session",
+      "vault_collab_request_session_permission",
       "vault_collab_list_sessions",
       "vault_collab_disconnect_session",
       "vault_collab_list_agent_roles",
@@ -66,6 +68,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_claim_handoff",
       "vault_collab_update_handoff",
       "vault_collab_request_user_confirmation",
+      "vault_collab_request_handoff_permission",
       "vault_collab_resolve_handoff",
       "vault_collab_recover_handoff",
       "vault_collab_reopen_handoff",
@@ -145,6 +148,98 @@ describe("Vault Collab MCP tools", () => {
       lastHeartbeatAt: "2026-05-28T10:00:02.000Z"
     });
     expect(events.map((event) => event.eventType)).toEqual(["session.registered"]);
+  });
+
+  it("records soft pings and permission requests through MCP without leaking tokens", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const coordinator = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Coordinator",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const worker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Worker",
+        clientType: "claude-code",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const ping = structured<{ eventType: string; sessionUid: string }>(
+      await tools.callTool("vault_collab_ping_session", {
+        targetSessionUid: worker.sessionUid,
+        actorSessionUid: coordinator.sessionUid,
+        message: "Check the inbox when active."
+      })
+    );
+    const awaitingSession = structured<{ status: string; statusDetail: string }>(
+      await tools.callTool("vault_collab_request_session_permission", {
+        sessionUid: worker.sessionUid,
+        sessionToken: worker.sessionToken,
+        question: "Allow filesystem write?",
+        requestedCapability: "filesystem-write",
+        commandPreview: "npm run build",
+        source: "claude-code"
+      })
+    );
+    const handoff = structured<{ handoffUid: string }>(
+      await tools.callTool("vault_collab_publish_handoff", {
+        shortPrompt: "Needs permission",
+        sourceProject: "Vault Collab",
+        targetProject: "Vault Collab"
+      })
+    );
+
+    await tools.callTool("vault_collab_claim_handoff", {
+      handoffUid: handoff.handoffUid,
+      sessionUid: worker.sessionUid,
+      sessionToken: worker.sessionToken
+    });
+    const awaitingHandoff = structured<{ status: string; progressNote: string }>(
+      await tools.callTool("vault_collab_request_handoff_permission", {
+        handoffUid: handoff.handoffUid,
+        sessionUid: worker.sessionUid,
+        sessionToken: worker.sessionToken,
+        question: "Allow network access?",
+        requestedCapability: "network",
+        commandPreview: "git push origin main",
+        source: "claude-code"
+      })
+    );
+    const sessionPermissionEvents = structured<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await tools.callTool("vault_collab_list_events", {
+        sessionUid: worker.sessionUid,
+        eventType: "session.permission_requested"
+      })
+    );
+    const handoffPermissionEvents = structured<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await tools.callTool("vault_collab_list_events", {
+        handoffUid: handoff.handoffUid,
+        eventType: "handoff.permission_requested"
+      })
+    );
+
+    expect(ping).toMatchObject({
+      eventType: "session.pinged",
+      sessionUid: worker.sessionUid
+    });
+    expect(awaitingSession).toMatchObject({
+      status: "awaiting_user",
+      statusDetail: "Allow filesystem write?"
+    });
+    expect(awaitingHandoff).toMatchObject({
+      status: "awaiting_user",
+      progressNote: "Allow network access?"
+    });
+    expect(sessionPermissionEvents).toHaveLength(1);
+    expect(handoffPermissionEvents).toHaveLength(1);
+    expect(JSON.stringify(sessionPermissionEvents)).not.toContain(worker.sessionToken);
+    expect(JSON.stringify(handoffPermissionEvents)).not.toContain(worker.sessionToken);
   });
 
   it("runs a provider-neutral agent, queue, and discussion workflow through MCP tools", async () => {

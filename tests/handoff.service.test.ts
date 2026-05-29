@@ -400,6 +400,62 @@ describe("HandoffService", () => {
     });
   });
 
+  it("marks a claimed handoff as awaiting permission with a token-safe event", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Ask permission",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    now = new Date("2026-05-28T11:02:40.000Z");
+
+    const awaitingPermission = handoffs.requestHandoffPermission(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      {
+        question: "Allow filesystem write for generated dashboard assets?",
+        requestedCapability: "filesystem-write",
+        commandPreview: "npm run build",
+        source: "claude-code"
+      }
+    );
+
+    expect(awaitingPermission).toMatchObject({
+      status: "awaiting_user",
+      progressNote: "Allow filesystem write for generated dashboard assets?",
+      updatedAt: "2026-05-28T11:02:40.000Z"
+    });
+    const permissionEvent = events.listEvents({
+      handoffUid: handoff.handoffUid,
+      eventType: "handoff.permission_requested"
+    })[0];
+    expect(permissionEvent).toMatchObject({
+      eventType: "handoff.permission_requested",
+      sessionUid: claude.sessionUid,
+      payload: {
+        permissionRequest: {
+          question: "Allow filesystem write for generated dashboard assets?",
+          requestedCapability: "filesystem-write",
+          commandPreview: "npm run build",
+          source: "claude-code",
+          createdAt: "2026-05-28T11:02:40.000Z"
+        }
+      }
+    });
+    expect(JSON.stringify(permissionEvent)).not.toContain(claude.sessionToken);
+    expect(() =>
+      handoffs.requestHandoffPermission(
+        handoff.handoffUid,
+        claude.sessionUid,
+        "wrong-token",
+        {
+          question: "Should fail."
+        }
+      )
+    ).toThrow(/invalid session token/i);
+  });
+
   it("releases a claimed handoff back to the available inbox", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Release me",

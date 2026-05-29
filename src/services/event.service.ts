@@ -20,6 +20,7 @@ interface RecordEventInput {
 interface ListEventsFilter {
   handoffUid?: string;
   sessionUid?: string;
+  eventType?: string;
 }
 
 export class EventService {
@@ -67,6 +68,11 @@ export class EventService {
     if (filter.sessionUid) {
       clauses.push("session_uid = ?");
       params.push(filter.sessionUid);
+    }
+
+    if (filter.eventType) {
+      clauses.push("event_type = ?");
+      params.push(filter.eventType);
     }
 
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";

@@ -149,6 +149,15 @@ or:
 }
 ```
 
+Filter event history by type when a dashboard only needs attention events:
+
+```json
+{
+  "sessionUid": "vc_sess_...",
+  "eventType": "session.permission_requested"
+}
+```
+
 Use `vault_collab_get_handoff_detail` to read a selected local handoff together
 with its lifecycle events, related public session snapshots, and discussion
 thread summaries:
@@ -178,6 +187,52 @@ capability such as `handoffRecovery=true`. Recovery emits
 `handoff.recovery_resolved` with reason, summary, previous claim owner,
 previous status, and evidence UID; it does not expose tokens or imply the
 recovery actor did the original implementation.
+
+Use `vault_collab_ping_session` for a soft dashboard or coordinator ping:
+
+```json
+{
+  "targetSessionUid": "vc_sess_...",
+  "actorSessionUid": "vc_sess_...",
+  "message": "Please check the inbox when active."
+}
+```
+
+The ping is only an inspectable `session.pinged` event. It does not wake a
+stopped client, claim a handoff, or execute work.
+
+Use `vault_collab_request_session_permission` when an active agent session needs
+human approval not tied to a handoff:
+
+```json
+{
+  "sessionUid": "vc_sess_...",
+  "sessionToken": "...",
+  "question": "Allow network access for git push?",
+  "requestedCapability": "network",
+  "commandPreview": "git push origin main",
+  "source": "codex"
+}
+```
+
+Use `vault_collab_request_handoff_permission` for permission waits tied to a
+claimed handoff:
+
+```json
+{
+  "handoffUid": "vc_handoff_...",
+  "sessionUid": "vc_sess_...",
+  "sessionToken": "...",
+  "question": "Allow filesystem write?",
+  "requestedCapability": "filesystem-write",
+  "commandPreview": "npm run build",
+  "source": "claude-code"
+}
+```
+
+Both permission tools move the session or handoff to `awaiting_user`, store the
+question in the public detail field, and emit a token-safe
+`permissionRequest` payload for read-only dashboard attention indicators.
 
 ## Injected Vault Memory Client
 

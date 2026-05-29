@@ -179,6 +179,98 @@ describe("SessionService", () => {
     ).toThrow(/invalid session token/i);
   });
 
+  it("records soft session pings without changing session state", () => {
+    const actor = service.registerSession({
+      displayName: "Coordinator",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const target = service.registerSession({
+      displayName: "Idle worker",
+      clientType: "claude-code",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    now = new Date("2026-05-28T10:01:30.000Z");
+
+    const event = service.pingSession(target.sessionUid, {
+      actorSessionUid: actor.sessionUid,
+      message: "Please check the inbox when active."
+    });
+
+    expect(event).toMatchObject({
+      eventType: "session.pinged",
+      sessionUid: target.sessionUid,
+      payload: {
+        actorSessionUid: actor.sessionUid,
+        message: "Please check the inbox when active.",
+        createdAt: "2026-05-28T10:01:30.000Z"
+      }
+    });
+    expect(service.getSession(target.sessionUid)).toMatchObject({
+      status: "idle",
+      statusDetail: null
+    });
+    expect(events.listEvents({ sessionUid: target.sessionUid, eventType: "session.pinged" })).toEqual([
+      event
+    ]);
+    expect(() => service.pingSession("vc_sess_missing", {})).toThrow(/session not found/i);
+  });
+
+  it("marks a session as awaiting user permission with a token-safe event", () => {
+    const registered = service.registerSession({
+      displayName: "Codex terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    now = new Date("2026-05-28T10:01:45.000Z");
+
+    const awaitingPermission = service.requestSessionPermission(
+      registered.sessionUid,
+      registered.sessionToken,
+      {
+        question: "Allow network access for git push?",
+        requestedCapability: "network",
+        commandPreview: "git push origin main",
+        source: "codex"
+      }
+    );
+
+    expect(awaitingPermission).toMatchObject({
+      status: "awaiting_user",
+      statusDetail: "Allow network access for git push?",
+      updatedAt: "2026-05-28T10:01:45.000Z"
+    });
+    const permissionEvent = events.listEvents({
+      sessionUid: registered.sessionUid,
+      eventType: "session.permission_requested"
+    })[0];
+    expect(permissionEvent).toMatchObject({
+      eventType: "session.permission_requested",
+      sessionUid: registered.sessionUid,
+      payload: {
+        permissionRequest: {
+          question: "Allow network access for git push?",
+          requestedCapability: "network",
+          commandPreview: "git push origin main",
+          source: "codex",
+          createdAt: "2026-05-28T10:01:45.000Z"
+        }
+      }
+    });
+    expect(JSON.stringify(permissionEvent)).not.toContain(registered.sessionToken);
+    expect(() =>
+      service.requestSessionPermission(registered.sessionUid, "wrong-token", {
+        question: "Should fail."
+      })
+    ).toThrow(/invalid session token/i);
+  });
+
   it("disconnects sessions without deleting them", () => {
     const registered = service.registerSession({
       displayName: "Octogent",

@@ -106,6 +106,18 @@ export interface SessionFilters {
   status?: SessionStatus;
 }
 
+export interface PingSessionInput {
+  actorSessionUid?: string | null;
+  message?: string | null;
+}
+
+export interface PermissionRequestInput {
+  question: string;
+  requestedCapability?: string | null;
+  commandPreview?: string | null;
+  source?: string | null;
+}
+
 export interface EventRecord {
   eventId: number;
   handoffUid: string | null;

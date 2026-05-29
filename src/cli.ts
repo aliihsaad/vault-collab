@@ -45,6 +45,8 @@ const commands = new Set([
   "heartbeat",
   "sessions",
   "state",
+  "ping-session",
+  "session-permission-request",
   "disconnect",
   "roles",
   "agent-upsert",
@@ -61,6 +63,7 @@ const commands = new Set([
   "events",
   "claim",
   "update",
+  "handoff-permission-request",
   "resolve",
   "recover",
   "reopen"
@@ -131,6 +134,24 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         requiredOption(parsed, "session-token"),
         optionSessionStatus(parsed, "status"),
         optionalOption(parsed, "detail") ?? null
+      );
+
+    case "ping-session":
+      return services.sessions.pingSession(requiredOption(parsed, "target-session-uid"), {
+        actorSessionUid: optionalOption(parsed, "actor-session-uid") ?? null,
+        message: optionalOption(parsed, "message") ?? null
+      });
+
+    case "session-permission-request":
+      return services.sessions.requestSessionPermission(
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        {
+          question: requiredOption(parsed, "question"),
+          requestedCapability: optionalOption(parsed, "requested-capability") ?? null,
+          commandPreview: optionalOption(parsed, "command-preview") ?? null,
+          source: optionalOption(parsed, "source") ?? null
+        }
       );
 
     case "disconnect":
@@ -249,7 +270,8 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
     case "events":
       return services.events.listEvents({
         handoffUid: optionalOption(parsed, "handoff-uid"),
-        sessionUid: optionalOption(parsed, "session-uid")
+        sessionUid: optionalOption(parsed, "session-uid"),
+        eventType: optionalOption(parsed, "event-type")
       });
 
     case "claim":
@@ -266,6 +288,19 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         requiredOption(parsed, "session-token"),
         optionHandoffStatus(parsed, "status"),
         requiredOption(parsed, "progress-note")
+      );
+
+    case "handoff-permission-request":
+      return services.handoffs.requestHandoffPermission(
+        requiredOption(parsed, "handoff-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        {
+          question: requiredOption(parsed, "question"),
+          requestedCapability: optionalOption(parsed, "requested-capability") ?? null,
+          commandPreview: optionalOption(parsed, "command-preview") ?? null,
+          source: optionalOption(parsed, "source") ?? null
+        }
       );
 
     case "resolve":
