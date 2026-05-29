@@ -167,8 +167,13 @@ export class SessionService {
   }
 
   pingSession(targetSessionUid: string, input: PingSessionInput = {}): EventRecord {
-    if (!this.findSessionRow(targetSessionUid)) {
+    const target = this.findSessionRow(targetSessionUid);
+    if (!target) {
       throw new Error(`Session not found: ${targetSessionUid}`);
+    }
+
+    if (target.status !== "idle") {
+      throw new Error(`Can only ping idle sessions; current status is ${target.status}`);
     }
 
     const createdAt = this.now();

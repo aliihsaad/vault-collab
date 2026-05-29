@@ -49,6 +49,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_ping_session",
       "vault_collab_request_session_permission",
       "vault_collab_list_sessions",
+      "vault_collab_get_session_attention",
       "vault_collab_disconnect_session",
       "vault_collab_list_agent_roles",
       "vault_collab_upsert_agent_profile",
@@ -223,11 +224,25 @@ describe("Vault Collab MCP tools", () => {
         eventType: "handoff.permission_requested"
       })
     );
+    const attention = structured<{
+      session: { sessionUid: string };
+      items: Array<{ kind: string; event?: { eventType: string }; handoff?: { handoffUid: string } }>;
+    }>(
+      await tools.callTool("vault_collab_get_session_attention", {
+        sessionUid: worker.sessionUid
+      })
+    );
 
     expect(ping).toMatchObject({
       eventType: "session.pinged",
       sessionUid: worker.sessionUid
     });
+    const busyPing = await tools.callTool("vault_collab_ping_session", {
+      targetSessionUid: worker.sessionUid,
+      actorSessionUid: coordinator.sessionUid,
+      message: "This should not interrupt an awaiting_user session."
+    });
+    expect(busyPing.isError).toBe(true);
     expect(awaitingSession).toMatchObject({
       status: "awaiting_user",
       statusDetail: "Allow filesystem write?"
@@ -238,8 +253,13 @@ describe("Vault Collab MCP tools", () => {
     });
     expect(sessionPermissionEvents).toHaveLength(1);
     expect(handoffPermissionEvents).toHaveLength(1);
+    expect(attention.session.sessionUid).toBe(worker.sessionUid);
+    expect(attention.items.map((item) => item.kind)).toEqual(
+      expect.arrayContaining(["session_ping", "session_permission", "handoff_permission"])
+    );
     expect(JSON.stringify(sessionPermissionEvents)).not.toContain(worker.sessionToken);
     expect(JSON.stringify(handoffPermissionEvents)).not.toContain(worker.sessionToken);
+    expect(JSON.stringify(attention)).not.toContain(worker.sessionToken);
   });
 
   it("runs a provider-neutral agent, queue, and discussion workflow through MCP tools", async () => {

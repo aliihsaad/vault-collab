@@ -547,11 +547,28 @@ describe("vault-collab CLI", () => {
         "session.permission_requested"
       ])
     );
+    const attention = parseJson<{
+      session: { sessionUid: string };
+      items: Array<{ kind: string }>;
+    }>(await runCli(["attention", "--db", dbPath, "--session-uid", worker.sessionUid]));
 
     expect(ping).toMatchObject({
       eventType: "session.pinged",
       sessionUid: worker.sessionUid
     });
+    const busyPing = await runCli([
+      "ping-session",
+      "--db",
+      dbPath,
+      "--target-session-uid",
+      worker.sessionUid,
+      "--actor-session-uid",
+      coordinator.sessionUid,
+      "--message",
+      "This should not interrupt an awaiting_user session."
+    ]);
+    expect(busyPing.exitCode).toBe(1);
+    expect(busyPing.stderr).toMatch(/only ping idle sessions/i);
     expect(awaitingSession).toMatchObject({
       status: "awaiting_user",
       statusDetail: "Allow filesystem write?"
@@ -563,7 +580,12 @@ describe("vault-collab CLI", () => {
     expect(permissionEvents.map((event) => event.eventType)).toEqual([
       "session.permission_requested"
     ]);
+    expect(attention.session.sessionUid).toBe(worker.sessionUid);
+    expect(attention.items.map((item) => item.kind)).toEqual(
+      expect.arrayContaining(["session_ping", "session_permission", "handoff_permission"])
+    );
     expect(JSON.stringify(permissionEvents)).not.toContain(worker.sessionToken);
+    expect(JSON.stringify(attention)).not.toContain(worker.sessionToken);
   });
 
   it("runs the agent, queue, and discussion workflow through flat JSON commands", async () => {

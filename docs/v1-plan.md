@@ -50,12 +50,20 @@ Discussion messages are append-only and token-safe. Creating a discussion and
 adding messages requires a valid session owner token, but neither action claims,
 resolves, reassigns, or executes a handoff.
 
-Soft pings are attention events only. They are useful for dashboards and active
-polling agents, but they do not wake a dead process, auto-claim work, or execute
-commands. Permission requests update session/handoff state to `awaiting_user`
-and store the question in public detail fields so old read-only dashboards can
-degrade safely while newer dashboards count and highlight the dedicated event
-types.
+Soft pings are attention events only and are restricted to target sessions whose
+current status is `idle`; this prevents dashboards/coordinators from poking
+agents that are already working, blocked, or awaiting the user. They are useful
+for dashboards and active polling agents, but they do not wake a dead process,
+auto-claim work, or execute commands. Permission requests update
+session/handoff state to `awaiting_user` and store the question in public detail
+fields so old read-only dashboards can degrade safely while newer dashboards
+count and highlight the dedicated event types.
+
+The session attention feed is the first delivery-loop primitive. It is
+read-only, token-safe, and cursor-friendly via event IDs. Active agents or a
+future watcher can poll it to notice pings, permission waits, discussion
+messages, claimed handoffs, suggested handoffs, and available project work
+without claiming or executing anything.
 
 Recovery resolution is a provenance-preserving lifecycle path for operational
 dead ends caused by context compaction or client restart. It emits

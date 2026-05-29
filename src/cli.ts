@@ -2,6 +2,7 @@
 import { pathToFileURL } from "node:url";
 import { createCollabDatabase } from "./database/connection.js";
 import { AgentProfileService } from "./services/agent-profile.service.js";
+import { AttentionService } from "./services/attention.service.js";
 import { DiscussionService } from "./services/discussion.service.js";
 import { EventService } from "./services/event.service.js";
 import { HandoffDetailService } from "./services/handoff-detail.service.js";
@@ -35,6 +36,7 @@ interface Services {
   handoffs: HandoffService;
   handoffDetails: HandoffDetailService;
   discussions: DiscussionService;
+  attention: AttentionService;
   events: EventService;
   close: () => void;
 }
@@ -44,6 +46,7 @@ const commands = new Set([
   "register",
   "heartbeat",
   "sessions",
+  "attention",
   "state",
   "ping-session",
   "session-permission-request",
@@ -126,6 +129,12 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         project: optionalOption(parsed, "project"),
         clientType: optionalClientType(parsed, "client-type"),
         status: optionalSessionStatus(parsed, "status")
+      });
+
+    case "attention":
+      return services.attention.getSessionAttention(requiredOption(parsed, "session-uid"), {
+        sinceEventId: optionalNumberOption(parsed, "since-event-id"),
+        includeCurrentHandoffs: !parsed.options.has("no-current-handoffs")
       });
 
     case "state":
@@ -339,6 +348,7 @@ function createServices(dbPath: string): Services {
   const sessions = new SessionService(db, events);
   const handoffs = new HandoffService(db, events);
   const discussions = new DiscussionService(db, events);
+  const attention = new AttentionService(db, sessions, handoffs, discussions, events);
 
   return {
     agents,
@@ -346,6 +356,7 @@ function createServices(dbPath: string): Services {
     handoffs,
     handoffDetails: new HandoffDetailService(handoffs, events, sessions, discussions),
     discussions,
+    attention,
     events,
     close: () => db.close()
   };

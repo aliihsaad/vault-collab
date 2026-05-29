@@ -127,6 +127,34 @@ export interface EventRecord {
   createdAt: string;
 }
 
+export type AttentionItemKind =
+  | "session_ping"
+  | "session_permission"
+  | "handoff_permission"
+  | "discussion_message"
+  | "suggested_handoff"
+  | "claimed_handoff"
+  | "available_handoff";
+
+export interface SessionAttentionOptions {
+  sinceEventId?: number;
+  includeCurrentHandoffs?: boolean;
+}
+
+export interface SessionAttentionItem {
+  kind: AttentionItemKind;
+  event: EventRecord | null;
+  handoff: HandoffRecord | null;
+  createdAt: string;
+}
+
+export interface SessionAttentionFeed {
+  session: SessionSnapshot;
+  sinceEventId: number;
+  latestEventId: number;
+  items: SessionAttentionItem[];
+}
+
 export type HandoffStatus =
   | "available"
   | "claimed"

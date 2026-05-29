@@ -190,13 +190,29 @@ node dist\cli.js session-permission-request --db $db --session-uid vc_sess_... -
 node dist\cli.js handoff-permission-request --db $db --handoff-uid vc_handoff_... --session-uid vc_sess_... --session-token ... --question "Allow filesystem write?" --requested-capability filesystem-write --command-preview "npm run build" --source claude-code
 ```
 
-`ping-session` records a `session.pinged` event only. It does not wake a stopped
-process, claim work, or execute anything. Permission-request commands move the
-session or handoff to `awaiting_user`, store the question in the public detail
-field, and emit token-safe `session.permission_requested` or
+`ping-session` records a `session.pinged` event only, and only when the target
+session is currently `idle`. This prevents pings from interrupting a working,
+blocked, or awaiting-user session. It does not wake a stopped process, claim
+work, or execute anything. Permission-request commands move the session or
+handoff to `awaiting_user`, store the question in the public detail field, and
+emit token-safe `session.permission_requested` or
 `handoff.permission_requested` events. Agents should record these events before
 triggering a human approval prompt when practical, then update state after the
 approval or denial.
+
+Read an active session's attention feed:
+
+```powershell
+node dist\cli.js attention --db $db --session-uid vc_sess_...
+
+node dist\cli.js attention --db $db --session-uid vc_sess_... --since-event-id 42 --no-current-handoffs
+```
+
+The feed is token-safe and does not mutate state. It aggregates pings,
+permission-needed events, discussion messages on relevant handoffs, claimed
+handoffs, suggested handoffs, and available project handoffs. It is meant for
+active agents or a future watcher/daemon to poll; it is not a delivery guarantee
+for stopped clients.
 
 Inspect event history:
 
@@ -247,6 +263,7 @@ Available MCP tools include:
 - `vault_collab_ping_session`
 - `vault_collab_request_session_permission`
 - `vault_collab_list_sessions`
+- `vault_collab_get_session_attention`
 - `vault_collab_disconnect_session`
 - `vault_collab_list_agent_roles`
 - `vault_collab_upsert_agent_profile`

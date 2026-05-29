@@ -220,6 +220,29 @@ describe("SessionService", () => {
     expect(() => service.pingSession("vc_sess_missing", {})).toThrow(/session not found/i);
   });
 
+  it("only records soft pings for idle sessions", () => {
+    const target = service.registerSession({
+      displayName: "Busy worker",
+      clientType: "claude-code",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    service.updateSessionState(
+      target.sessionUid,
+      target.sessionToken,
+      "working",
+      "Already handling a handoff"
+    );
+
+    expect(() =>
+      service.pingSession(target.sessionUid, {
+        message: "Please check another handoff."
+      })
+    ).toThrow(/only ping idle sessions/i);
+    expect(events.listEvents({ sessionUid: target.sessionUid, eventType: "session.pinged" })).toEqual([]);
+  });
+
   it("marks a session as awaiting user permission with a token-safe event", () => {
     const registered = service.registerSession({
       displayName: "Codex terminal",

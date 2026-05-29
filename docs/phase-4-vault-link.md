@@ -198,8 +198,24 @@ Use `vault_collab_ping_session` for a soft dashboard or coordinator ping:
 }
 ```
 
-The ping is only an inspectable `session.pinged` event. It does not wake a
-stopped client, claim a handoff, or execute work.
+The ping is only an inspectable `session.pinged` event and can only target a
+session whose current status is `idle`. It does not wake a stopped client, claim
+a handoff, interrupt active work, or execute work.
+
+Use `vault_collab_get_session_attention` for the token-safe attention feed an
+active agent or watcher can poll:
+
+```json
+{
+  "sessionUid": "vc_sess_...",
+  "sinceEventId": 42,
+  "includeCurrentHandoffs": true
+}
+```
+
+The feed aggregates relevant pings, permission requests, discussion messages,
+claimed handoffs, suggested handoffs, and available project handoffs. It is a
+read-only notice surface and does not claim or execute work.
 
 Use `vault_collab_request_session_permission` when an active agent session needs
 human approval not tied to a handoff:

@@ -2,6 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createCollabDatabase, type CollabDatabase } from "../database/connection.js";
 import { AgentProfileService } from "../services/agent-profile.service.js";
+import { AttentionService } from "../services/attention.service.js";
 import { DiscussionService } from "../services/discussion.service.js";
 import { EventService } from "../services/event.service.js";
 import { HandoffDetailService } from "../services/handoff-detail.service.js";
@@ -26,6 +27,7 @@ export const vaultCollabToolNames = [
   "vault_collab_ping_session",
   "vault_collab_request_session_permission",
   "vault_collab_list_sessions",
+  "vault_collab_get_session_attention",
   "vault_collab_disconnect_session",
   "vault_collab_list_agent_roles",
   "vault_collab_upsert_agent_profile",
@@ -253,6 +255,15 @@ const listSessionsInputSchema = z.object({
   status: sessionStatusSchema.describe("Optional session status filter.").optional()
 });
 
+const getSessionAttentionInputSchema = z.object({
+  sessionUid: optionalStringSchema("Required if session_uid is omitted. Session identifier."),
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
+  sinceEventId: optionalNumberSchema("Only include event-backed attention after this event id."),
+  since_event_id: optionalNumberSchema("Snake_case alias for sinceEventId."),
+  includeCurrentHandoffs: optionalBooleanSchema("Include current claimed/suggested/available handoffs."),
+  include_current_handoffs: optionalBooleanSchema("Snake_case alias for includeCurrentHandoffs.")
+});
+
 const listAgentRolesInputSchema = z.object({
   includeCustom: optionalBooleanSchema("Reserved for future custom role discovery."),
   include_custom: optionalBooleanSchema("Snake_case alias for includeCustom.")
@@ -472,7 +483,8 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
   {
     name: "vault_collab_ping_session",
     title: "Ping Session",
-    description: "Record a soft attention ping for a session without waking or auto-claiming.",
+    description:
+      "Record a soft attention ping for an idle session without waking, interrupting, or auto-claiming.",
     inputSchema: pingSessionInputSchema
   },
   {
@@ -486,6 +498,12 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     title: "List Sessions",
     description: "List collaboration sessions without exposing owner tokens.",
     inputSchema: listSessionsInputSchema
+  },
+  {
+    name: "vault_collab_get_session_attention",
+    title: "Get Session Attention",
+    description: "Read a token-safe attention feed for an active session without claiming or executing work.",
+    inputSchema: getSessionAttentionInputSchema
   },
   {
     name: "vault_collab_disconnect_session",
@@ -645,6 +663,7 @@ export function createVaultCollabMcpTools(
   const handoffs = new HandoffService(db, events, options.clock);
   const discussions = new DiscussionService(db, events, options.clock);
   const handoffDetails = new HandoffDetailService(handoffs, events, sessions, discussions);
+  const attention = new AttentionService(db, sessions, handoffs, discussions, events);
   const linkedHandoffs = options.vaultMemoryClient
     ? new VaultLinkedHandoffService(handoffs, options.vaultMemoryClient)
     : null;
@@ -703,6 +722,12 @@ export function createVaultCollabMcpTools(
         project: optionalString(args, "project"),
         clientType: optionalClientType(args, "clientType", "client_type"),
         status: optionalSessionStatus(args, "status")
+      }),
+    vault_collab_get_session_attention: (args) =>
+      attention.getSessionAttention(requiredString(args, "sessionUid", "session_uid"), {
+        sinceEventId: optionalNumber(args, "sinceEventId", "since_event_id"),
+        includeCurrentHandoffs:
+          optionalBoolean(args, "includeCurrentHandoffs", "include_current_handoffs") ?? true
       }),
     vault_collab_disconnect_session: (args) => {
       const sessionUid = requiredString(args, "sessionUid", "session_uid");
