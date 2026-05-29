@@ -106,6 +106,7 @@ Relevant Phase 4 tools:
 - `vault_collab_link_vault_memory`
 - `vault_collab_get_handoff`
 - `vault_collab_get_handoff_detail`
+- `vault_collab_recover_handoff`
 - `vault_collab_list_events`
 
 Use `vault_collab_publish_handoff` with `vaultMemoryUid` when a Vault memory item
@@ -158,6 +159,26 @@ thread summaries:
 }
 ```
 
+Use `vault_collab_recover_handoff` only for audited closure of a completed or
+abandoned handoff whose claim owner token is no longer available:
+
+```json
+{
+  "handoffUid": "vc_handoff_...",
+  "actorSessionUid": "vc_sess_...",
+  "actorSessionToken": "...",
+  "reason": "Claim owner token was lost after client restart.",
+  "summary": "Completion report accepted.",
+  "evidenceVaultMemoryUid": "vm_..."
+}
+```
+
+The actor must be the source session owner or a session with a recovery/admin
+capability such as `handoffRecovery=true`. Recovery emits
+`handoff.recovery_resolved` with reason, summary, previous claim owner,
+previous status, and evidence UID; it does not expose tokens or imply the
+recovery actor did the original implementation.
+
 ## Injected Vault Memory Client
 
 `vault_collab_publish_handoff_with_vault_memory` saves the full brief to Vault
@@ -208,6 +229,8 @@ depend on it.
 - Manual Vault memory linking requires the source session token.
 - Discussion thread creation and message append require the authoring session
   token.
+- Recovery resolution requires source-session ownership or recovery/admin
+  capability plus a reason, summary, and evidence Vault memory UID.
 - Event history is append-only and inspectable through CLI/MCP.
 - Discussion messages are append-only in v2 Phase 1.
 - A short local handoff remains useful even when the full Vault memory brief is

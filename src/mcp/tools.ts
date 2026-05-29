@@ -44,6 +44,7 @@ export const vaultCollabToolNames = [
   "vault_collab_update_handoff",
   "vault_collab_request_user_confirmation",
   "vault_collab_resolve_handoff",
+  "vault_collab_recover_handoff",
   "vault_collab_reopen_handoff",
   "vault_collab_release_handoff"
 ] as const;
@@ -400,6 +401,19 @@ const resolveHandoffInputSchema = ownedHandoffInputSchema.extend({
   summary: requiredStringSchema("Resolution summary.")
 });
 
+const recoverHandoffInputSchema = handoffUidInputSchema.extend({
+  actorSessionUid: optionalStringSchema("Required if actor_session_uid is omitted. Recovery actor session identifier."),
+  actor_session_uid: optionalStringSchema("Snake_case alias for actorSessionUid."),
+  actorSessionToken: optionalStringSchema("Required if actor_session_token is omitted. Recovery actor session token."),
+  actor_session_token: optionalStringSchema("Snake_case alias for actorSessionToken."),
+  reason: requiredStringSchema("Recovery reason."),
+  summary: optionalStringSchema("Required if resolution_summary is omitted. Recovery resolution summary."),
+  resolutionSummary: optionalStringSchema("Alias for summary."),
+  resolution_summary: optionalStringSchema("Snake_case alias for resolutionSummary."),
+  evidenceVaultMemoryUid: optionalStringSchema("Required if evidence_vault_memory_uid is omitted. Vault memory evidence UID."),
+  evidence_vault_memory_uid: optionalStringSchema("Snake_case alias for evidenceVaultMemoryUid.")
+});
+
 const reopenHandoffInputSchema = handoffUidInputSchema.extend({
   reason: requiredStringSchema("Reason for reopening the handoff."),
   status: handoffStatusSchema.describe("Status to reopen as. Defaults to available.").optional()
@@ -549,6 +563,13 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     title: "Resolve Handoff",
     description: "Resolve a claimed handoff with a summary.",
     inputSchema: resolveHandoffInputSchema
+  },
+  {
+    name: "vault_collab_recover_handoff",
+    title: "Recover Handoff",
+    description:
+      "Audited recovery resolve for completed handoffs whose claim owner token is unavailable.",
+    inputSchema: recoverHandoffInputSchema
   },
   {
     name: "vault_collab_reopen_handoff",
@@ -790,6 +811,18 @@ export function createVaultCollabMcpTools(
         requiredString(args, "sessionToken", "session_token"),
         requiredString(args, "summary")
       ),
+    vault_collab_recover_handoff: (args) =>
+      handoffs.recoverHandoff(requiredString(args, "handoffUid", "handoff_uid"), {
+        actorSessionUid: requiredString(args, "actorSessionUid", "actor_session_uid"),
+        actorSessionToken: requiredString(args, "actorSessionToken", "actor_session_token"),
+        reason: requiredString(args, "reason"),
+        resolutionSummary: requiredString(args, "summary", "resolutionSummary", "resolution_summary"),
+        evidenceVaultMemoryUid: requiredString(
+          args,
+          "evidenceVaultMemoryUid",
+          "evidence_vault_memory_uid"
+        )
+      }),
     vault_collab_reopen_handoff: (args) =>
       handoffs.reopenHandoff(
         requiredString(args, "handoffUid", "handoff_uid"),

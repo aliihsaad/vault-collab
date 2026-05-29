@@ -468,6 +468,138 @@ describe("HandoffService", () => {
     ]);
   });
 
+  it("recovers a completed handoff when the claim owner token is unavailable", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Recover me",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      sourceSessionUid: codex.sessionUid
+    });
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    handoffs.updateHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      "in_progress",
+      "Implementation complete, token lost before resolve"
+    );
+    now = new Date("2026-05-28T11:03:30.000Z");
+
+    const recovered = handoffs.recoverHandoff(handoff.handoffUid, {
+      actorSessionUid: codex.sessionUid,
+      actorSessionToken: codex.sessionToken,
+      reason: "Claim owner token was lost after context compaction.",
+      resolutionSummary: "Completion report accepted and verified.",
+      evidenceVaultMemoryUid: "vm_recovery_evidence"
+    });
+
+    expect(recovered).toMatchObject({
+      status: "resolved",
+      claimedBySessionUid: claude.sessionUid,
+      vaultMemoryUid: "vm_recovery_evidence",
+      resolutionSummary: "Completion report accepted and verified.",
+      resolvedAt: "2026-05-28T11:03:30.000Z"
+    });
+    expect(sessions.listSessions({ clientType: "claude-code" })[0].currentHandoffUid).toBeNull();
+    expect(handoffs.listInbox({ targetProject: "Vault Collab" })).toEqual([]);
+    expect(() =>
+      handoffs.releaseHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken)
+    ).toThrow(/closed handoff/i);
+    expect(handoffs.getHandoff(handoff.handoffUid)).toMatchObject({
+      status: "resolved",
+      claimedBySessionUid: claude.sessionUid
+    });
+
+    const recoveryEvent = events.listEvents({ handoffUid: handoff.handoffUid }).at(-1);
+    expect(recoveryEvent).toMatchObject({
+      eventType: "handoff.recovery_resolved",
+      sessionUid: codex.sessionUid,
+      payload: {
+        reason: "Claim owner token was lost after context compaction.",
+        summary: "Completion report accepted and verified.",
+        evidenceVaultMemoryUid: "vm_recovery_evidence",
+        previousClaimedBySessionUid: claude.sessionUid,
+        previousStatus: "in_progress",
+        actorAuthorizedBy: "source_session"
+      }
+    });
+    expect(JSON.stringify(recoveryEvent)).not.toContain(codex.sessionToken);
+    expect(JSON.stringify(recoveryEvent)).not.toContain(claude.sessionToken);
+    expect(
+      events.listEvents({ handoffUid: handoff.handoffUid }).map((event) => event.eventType)
+    ).not.toContain("handoff.released");
+  });
+
+  it("allows only source or recovery-capable sessions to recover handoffs", () => {
+    const auditor = sessions.registerSession({
+      displayName: "Recovery Auditor",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {
+        handoffRecovery: true
+      }
+    });
+    const outsider = sessions.registerSession({
+      displayName: "Observer",
+      clientType: "other",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {
+        handoffs: true
+      }
+    });
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Recover by auditor",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      sourceSessionUid: codex.sessionUid,
+      vaultMemoryUid: "vm_original_brief"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+
+    expect(() =>
+      handoffs.recoverHandoff(handoff.handoffUid, {
+        actorSessionUid: outsider.sessionUid,
+        actorSessionToken: outsider.sessionToken,
+        reason: "Not authorized.",
+        resolutionSummary: "Should fail.",
+        evidenceVaultMemoryUid: "vm_recovery_evidence"
+      })
+    ).toThrow(/source session or recovery-capable session/i);
+    expect(() =>
+      handoffs.recoverHandoff(handoff.handoffUid, {
+        actorSessionUid: auditor.sessionUid,
+        actorSessionToken: "wrong-token",
+        reason: "Wrong token.",
+        resolutionSummary: "Should fail.",
+        evidenceVaultMemoryUid: "vm_recovery_evidence"
+      })
+    ).toThrow(/invalid session token/i);
+
+    const recovered = handoffs.recoverHandoff(handoff.handoffUid, {
+      actorSessionUid: auditor.sessionUid,
+      actorSessionToken: auditor.sessionToken,
+      reason: "Owner session was restarted and token is unavailable.",
+      resolutionSummary: "Audited completion evidence accepted.",
+      evidenceVaultMemoryUid: "vm_recovery_evidence"
+    });
+
+    expect(recovered).toMatchObject({
+      status: "resolved",
+      claimedBySessionUid: claude.sessionUid,
+      vaultMemoryUid: "vm_original_brief"
+    });
+    expect(events.listEvents({ handoffUid: handoff.handoffUid }).at(-1)).toMatchObject({
+      eventType: "handoff.recovery_resolved",
+      sessionUid: auditor.sessionUid,
+      payload: {
+        actorAuthorizedBy: "recovery_capability",
+        evidenceVaultMemoryUid: "vm_recovery_evidence"
+      }
+    });
+  });
+
   it("reopens a resolved handoff as available work", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Reopen me",

@@ -212,6 +212,14 @@ export interface UpdateHandoffMetadataInput {
   dependsOnHandoffUid?: string | null;
 }
 
+export interface RecoverHandoffInput {
+  actorSessionUid: string;
+  actorSessionToken: string;
+  reason: string;
+  resolutionSummary: string;
+  evidenceVaultMemoryUid: string;
+}
+
 export type DiscussionThreadStatus = "open" | "resolved";
 
 export type DiscussionMessageType =

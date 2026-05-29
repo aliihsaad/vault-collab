@@ -67,6 +67,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_update_handoff",
       "vault_collab_request_user_confirmation",
       "vault_collab_resolve_handoff",
+      "vault_collab_recover_handoff",
       "vault_collab_reopen_handoff",
       "vault_collab_release_handoff"
     ]);
@@ -676,5 +677,93 @@ describe("Vault Collab MCP tools", () => {
     );
 
     expect(got.vaultMemoryUid).toBe("vm_mcp_linked_brief");
+  });
+
+  it("recovers a stranded handoff through MCP without leaking tokens", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const source = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Source",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const implementer = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Implementer",
+        clientType: "claude-code",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const handoff = structured<{ handoffUid: string }>(
+      await tools.callTool("vault_collab_publish_handoff", {
+        shortPrompt: "Recover from MCP",
+        sourceProject: "Vault Collab",
+        targetProject: "Vault Collab",
+        sourceSessionUid: source.sessionUid
+      })
+    );
+
+    await tools.callTool("vault_collab_claim_handoff", {
+      handoffUid: handoff.handoffUid,
+      sessionUid: implementer.sessionUid,
+      sessionToken: implementer.sessionToken
+    });
+    await tools.callTool("vault_collab_update_handoff", {
+      handoffUid: handoff.handoffUid,
+      sessionUid: implementer.sessionUid,
+      sessionToken: implementer.sessionToken,
+      status: "in_progress",
+      progressNote: "Work complete but owner token was lost."
+    });
+
+    const recovered = structured<{ status: string; claimedBySessionUid: string }>(
+      await tools.callTool("vault_collab_recover_handoff", {
+        handoffUid: handoff.handoffUid,
+        actorSessionUid: source.sessionUid,
+        actorSessionToken: source.sessionToken,
+        reason: "Owner token unavailable after restart.",
+        summary: "Completion evidence accepted.",
+        evidenceVaultMemoryUid: "vm_recovery_evidence"
+      })
+    );
+
+    expect(recovered).toMatchObject({
+      status: "resolved",
+      claimedBySessionUid: implementer.sessionUid
+    });
+    const failedRelease = await tools.callTool("vault_collab_release_handoff", {
+      handoffUid: handoff.handoffUid,
+      sessionUid: implementer.sessionUid,
+      sessionToken: implementer.sessionToken
+    });
+    expect(failedRelease.isError).toBe(true);
+    expect(JSON.stringify(failedRelease)).not.toContain(implementer.sessionToken);
+
+    const events = structured<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await tools.callTool("vault_collab_list_events", {
+        handoffUid: handoff.handoffUid
+      })
+    );
+    expect(events.map((event) => event.eventType)).toEqual([
+      "handoff.published",
+      "handoff.claimed",
+      "handoff.updated",
+      "handoff.recovery_resolved"
+    ]);
+    expect(events.at(-1)?.payload).toMatchObject({
+      reason: "Owner token unavailable after restart.",
+      summary: "Completion evidence accepted.",
+      evidenceVaultMemoryUid: "vm_recovery_evidence",
+      previousClaimedBySessionUid: implementer.sessionUid,
+      previousStatus: "in_progress",
+      actorAuthorizedBy: "source_session"
+    });
+    expect(JSON.stringify(events)).not.toContain(source.sessionToken);
+    expect(JSON.stringify(events)).not.toContain(implementer.sessionToken);
   });
 });

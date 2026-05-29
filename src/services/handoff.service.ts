@@ -8,6 +8,7 @@ import type {
   HandoffRecord,
   HandoffStatus,
   PublishHandoffInput,
+  RecoverHandoffInput,
   UpdateHandoffMetadataInput
 } from "../types.js";
 
@@ -44,6 +45,7 @@ interface HandoffRow {
 interface SessionOwnerRow {
   session_uid: string;
   session_token: string;
+  capabilities_json: string;
 }
 
 const closedInboxStatuses: HandoffStatus[] = ["resolved", "abandoned", "stale"];
@@ -536,6 +538,91 @@ export class HandoffService {
     return this.requireHandoff(handoffUid);
   }
 
+  recoverHandoff(handoffUid: string, input: RecoverHandoffInput): HandoffRecord {
+    this.assertNonEmpty(input.reason, "Recovery reason");
+    this.assertNonEmpty(input.resolutionSummary, "Recovery resolution summary");
+    this.assertNonEmpty(input.evidenceVaultMemoryUid, "Recovery evidence Vault memory UID");
+
+    const actor = this.assertSessionOwner(input.actorSessionUid, input.actorSessionToken);
+    const handoff = this.findHandoffRow(handoffUid);
+    if (!handoff) {
+      throw new Error(`Handoff not found: ${handoffUid}`);
+    }
+
+    if (handoff.status === "resolved") {
+      throw new Error("Handoff is already resolved");
+    }
+
+    const actorCapabilities = JSON.parse(actor.capabilities_json) as Record<string, unknown>;
+    const isSourceSession = handoff.source_session_uid === input.actorSessionUid;
+    const hasRecoveryCapability =
+      actorCapabilities.handoffRecovery === true || actorCapabilities.admin === true;
+    if (!isSourceSession && !hasRecoveryCapability) {
+      throw new Error("Recovery resolve requires source session or recovery-capable session");
+    }
+
+    const now = this.now();
+    const actorAuthorizedBy = isSourceSession ? "source_session" : "recovery_capability";
+    const previousClaimedBySessionUid = handoff.claimed_by_session_uid;
+    const previousStatus = handoff.status;
+
+    const recover = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          UPDATE handoffs
+          SET status = ?,
+              vault_memory_uid = COALESCE(vault_memory_uid, ?),
+              claim_token = NULL,
+              lease_expires_at = NULL,
+              resolution_summary = ?,
+              resolved_at = ?,
+              updated_at = ?
+          WHERE handoff_uid = ?
+        `
+        )
+        .run(
+          "resolved",
+          input.evidenceVaultMemoryUid,
+          input.resolutionSummary,
+          now,
+          now,
+          handoffUid
+        );
+
+      if (previousClaimedBySessionUid) {
+        this.db
+          .prepare(
+            `
+            UPDATE sessions
+            SET current_handoff_uid = NULL, updated_at = ?
+            WHERE session_uid = ?
+              AND current_handoff_uid = ?
+          `
+          )
+          .run(now, previousClaimedBySessionUid, handoffUid);
+      }
+    });
+
+    recover();
+
+    this.events.recordEvent({
+      eventType: "handoff.recovery_resolved",
+      handoffUid,
+      sessionUid: input.actorSessionUid,
+      payload: {
+        reason: input.reason,
+        summary: input.resolutionSummary,
+        evidenceVaultMemoryUid: input.evidenceVaultMemoryUid,
+        previousClaimedBySessionUid,
+        previousStatus,
+        actorAuthorizedBy
+      }
+    });
+
+    return this.requireHandoff(handoffUid);
+  }
+
   reopenHandoff(
     handoffUid: string,
     reason: string,
@@ -612,12 +699,18 @@ export class HandoffService {
       throw new Error("Handoff is not claimed by session");
     }
 
+    if (closedInboxStatuses.includes(handoff.status)) {
+      throw new Error(`Cannot mutate closed handoff: ${handoff.status}`);
+    }
+
     return handoff;
   }
 
-  private assertSessionOwner(sessionUid: string, sessionToken: string): void {
+  private assertSessionOwner(sessionUid: string, sessionToken: string): SessionOwnerRow {
     const row = this.db
-      .prepare("SELECT session_uid, session_token FROM sessions WHERE session_uid = ?")
+      .prepare(
+        "SELECT session_uid, session_token, capabilities_json FROM sessions WHERE session_uid = ?"
+      )
       .get(sessionUid) as SessionOwnerRow | undefined;
 
     if (!row) {
@@ -626,6 +719,14 @@ export class HandoffService {
 
     if (row.session_token !== sessionToken) {
       throw new Error("Invalid session token");
+    }
+
+    return row;
+  }
+
+  private assertNonEmpty(value: string, label: string): void {
+    if (value.trim() === "") {
+      throw new Error(`${label} cannot be empty`);
     }
   }
 

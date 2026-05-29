@@ -6,6 +6,9 @@ Current scope:
 - TypeScript, Vitest, and SQLite scaffold.
 - Local session registration, heartbeat, state, disconnect, and listing.
 - Local handoff publish, list, claim, update, resolve, and reopen.
+- Audited recovery resolution for completed handoffs stranded after owner-token
+  loss, requiring source/recovery-capable actor credentials plus reason,
+  summary, and Vault memory evidence.
 - Read-only event history listing for inspectable session and handoff lifecycles.
 - Read-only selected handoff detail bundles containing the handoff, lifecycle
   events, and non-token related session snapshots.
@@ -43,6 +46,12 @@ bind sessions to agent profiles.
 Discussion messages are append-only and token-safe. Creating a discussion and
 adding messages requires a valid session owner token, but neither action claims,
 resolves, reassigns, or executes a handoff.
+
+Recovery resolution is a provenance-preserving lifecycle path for operational
+dead ends caused by context compaction or client restart. It emits
+`handoff.recovery_resolved`, clears stale current-handoff pointers, preserves the
+previous claim owner on the handoff record, and requires linked Vault memory
+evidence.
 
 Queue metadata is additive. Existing inbox behavior remains compatible, while
 new callers can filter and sort by `queueKey`, `labels`, `queuePosition`, and

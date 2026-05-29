@@ -166,6 +166,18 @@ node dist\cli.js update --db $db --handoff-uid vc_handoff_... --session-uid vc_s
 node dist\cli.js resolve --db $db --handoff-uid vc_handoff_... --session-uid vc_sess_... --session-token ... --summary "Completed and verified."
 ```
 
+Recover a completed handoff when the claimed owner token is no longer available:
+
+```powershell
+node dist\cli.js recover --db $db --handoff-uid vc_handoff_... --actor-session-uid vc_sess_... --actor-session-token ... --reason "Claim owner token was lost after restart." --summary "Completion report accepted." --evidence-vault-memory-uid vm_...
+```
+
+Recovery resolution is audited separately from normal owner resolution. The actor
+must be the source session owner or a session registered with a recovery/admin
+capability such as `handoffRecovery=true`, and the event history records the
+previous claim owner, previous status, reason, summary, and evidence memory UID
+without exposing tokens.
+
 Inspect event history:
 
 ```powershell
@@ -232,6 +244,7 @@ Available MCP tools include:
 - `vault_collab_update_handoff`
 - `vault_collab_request_user_confirmation`
 - `vault_collab_resolve_handoff`
+- `vault_collab_recover_handoff`
 - `vault_collab_reopen_handoff`
 - `vault_collab_release_handoff`
 
@@ -289,6 +302,9 @@ docs/
   roles.
 - Token-owned mutations: sensitive lifecycle updates require the owning session
   token.
+- Audited recovery: source sessions or recovery-capable sessions can close
+  stranded completed handoffs with required reason, summary, and Vault memory
+  evidence, producing `handoff.recovery_resolved` events.
 - Roles are metadata: roles help routing and UI display, but do not create
   provider-specific client classes.
 - Discussions are append-only: messages are added for auditability rather than

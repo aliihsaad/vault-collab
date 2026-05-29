@@ -308,6 +308,125 @@ describe("vault-collab CLI", () => {
     ]);
   });
 
+  it("recovers a stranded handoff through the CLI without leaking owner tokens", async () => {
+    const source = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Source",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const implementer = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Claude Code",
+        "--client-type",
+        "claude-code",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const handoff = parseJson<{ handoffUid: string }>(
+      await runCli([
+        "publish",
+        "--db",
+        dbPath,
+        "--short-prompt",
+        "Recover with CLI",
+        "--source-project",
+        "Vault Collab",
+        "--target-project",
+        "Vault Collab",
+        "--source-session-uid",
+        source.sessionUid
+      ])
+    );
+
+    await runCli([
+      "claim",
+      "--db",
+      dbPath,
+      "--handoff-uid",
+      handoff.handoffUid,
+      "--session-uid",
+      implementer.sessionUid,
+      "--session-token",
+      implementer.sessionToken
+    ]);
+    await runCli([
+      "update",
+      "--db",
+      dbPath,
+      "--handoff-uid",
+      handoff.handoffUid,
+      "--session-uid",
+      implementer.sessionUid,
+      "--session-token",
+      implementer.sessionToken,
+      "--status",
+      "in_progress",
+      "--progress-note",
+      "Complete but stranded"
+    ]);
+
+    const recovered = parseJson<{ status: string; claimedBySessionUid: string }>(
+      await runCli([
+        "recover",
+        "--db",
+        dbPath,
+        "--handoff-uid",
+        handoff.handoffUid,
+        "--actor-session-uid",
+        source.sessionUid,
+        "--actor-session-token",
+        source.sessionToken,
+        "--reason",
+        "Owner token unavailable after compaction.",
+        "--summary",
+        "Completion report accepted.",
+        "--evidence-vault-memory-uid",
+        "vm_recovery_evidence"
+      ])
+    );
+    const events = parseJson<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await runCli(["events", "--db", dbPath, "--handoff-uid", handoff.handoffUid])
+    );
+
+    expect(recovered).toMatchObject({
+      status: "resolved",
+      claimedBySessionUid: implementer.sessionUid
+    });
+    expect(events.map((event) => event.eventType)).toEqual([
+      "handoff.published",
+      "handoff.claimed",
+      "handoff.updated",
+      "handoff.recovery_resolved"
+    ]);
+    expect(events.at(-1)?.payload).toMatchObject({
+      reason: "Owner token unavailable after compaction.",
+      summary: "Completion report accepted.",
+      evidenceVaultMemoryUid: "vm_recovery_evidence",
+      previousClaimedBySessionUid: implementer.sessionUid,
+      previousStatus: "in_progress",
+      actorAuthorizedBy: "source_session"
+    });
+    expect(JSON.stringify(events)).not.toContain(source.sessionToken);
+    expect(JSON.stringify(events)).not.toContain(implementer.sessionToken);
+  });
+
   it("runs the agent, queue, and discussion workflow through flat JSON commands", async () => {
     const roles = parseJson<Array<{ role: string }>>(await runCli(["roles", "--db", dbPath]));
     expect(roles.map((role) => role.role)).toEqual([

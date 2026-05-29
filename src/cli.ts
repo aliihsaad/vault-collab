@@ -62,6 +62,7 @@ const commands = new Set([
   "claim",
   "update",
   "resolve",
+  "recover",
   "reopen"
 ]);
 
@@ -274,6 +275,15 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         requiredOption(parsed, "session-token"),
         requiredOption(parsed, "summary")
       );
+
+    case "recover":
+      return services.handoffs.recoverHandoff(requiredOption(parsed, "handoff-uid"), {
+        actorSessionUid: requiredOption(parsed, "actor-session-uid"),
+        actorSessionToken: requiredOption(parsed, "actor-session-token"),
+        reason: requiredOption(parsed, "reason"),
+        resolutionSummary: requiredOption(parsed, "summary"),
+        evidenceVaultMemoryUid: requiredOption(parsed, "evidence-vault-memory-uid")
+      });
 
     case "reopen":
       return services.handoffs.reopenHandoff(
