@@ -111,6 +111,8 @@ describe("vault-collab CLI", () => {
         "Vault Collab",
         "--source-session-uid",
         codex.sessionUid,
+        "--suggested-session-uid",
+        claude.sessionUid,
         "--suggested-client-type",
         "claude-code",
         "--related-file",
@@ -198,6 +200,38 @@ describe("vault-collab CLI", () => {
       progressNote: "CLI tests are driving the implementation."
     });
 
+    const detail = parseJson<{
+      handoff: { handoffUid: string; status: string };
+      events: Array<{ eventType: string }>;
+      sessions: {
+        sourceSession: { sessionUid: string; sessionToken?: string } | null;
+        suggestedSession: { sessionUid: string; sessionToken?: string } | null;
+        claimedBySession: { sessionUid: string; sessionToken?: string } | null;
+      };
+    }>(await runCli(["handoff", "--db", dbPath, "--handoff-uid", published.handoffUid]));
+
+    expect(detail.handoff).toMatchObject({
+      handoffUid: published.handoffUid,
+      status: "in_progress"
+    });
+    expect(detail.events.map((event) => event.eventType)).toEqual([
+      "handoff.published",
+      "handoff.vault_memory_linked",
+      "handoff.claimed",
+      "handoff.updated"
+    ]);
+    expect(detail.sessions.sourceSession).toMatchObject({
+      sessionUid: codex.sessionUid
+    });
+    expect(detail.sessions.suggestedSession).toMatchObject({
+      sessionUid: claude.sessionUid
+    });
+    expect(detail.sessions.claimedBySession).toMatchObject({
+      sessionUid: claude.sessionUid
+    });
+    expect(JSON.stringify(detail)).not.toContain(codex.sessionToken);
+    expect(JSON.stringify(detail)).not.toContain(claude.sessionToken);
+
     const resolved = parseJson<{ status: string; resolutionSummary: string }>(
       await runCli([
         "resolve",
@@ -272,6 +306,252 @@ describe("vault-collab CLI", () => {
       "handoff.updated",
       "handoff.resolved"
     ]);
+  });
+
+  it("runs the agent, queue, and discussion workflow through flat JSON commands", async () => {
+    const roles = parseJson<Array<{ role: string }>>(await runCli(["roles", "--db", dbPath]));
+    expect(roles.map((role) => role.role)).toEqual([
+      "coordinator",
+      "implementer",
+      "reviewer",
+      "sweeper",
+      "observer"
+    ]);
+
+    const reviewer = parseJson<{ agentUid: string; clientType: string }>(
+      await runCli([
+        "agent-upsert",
+        "--db",
+        dbPath,
+        "--stable-name",
+        "claude-reviewer",
+        "--display-name",
+        "Claude Reviewer",
+        "--role",
+        "reviewer",
+        "--client-type",
+        "claude-code",
+        "--project",
+        "Vault Collab",
+        "--capability",
+        "review=true"
+      ])
+    );
+    const implementer = parseJson<{ agentUid: string; clientType: string }>(
+      await runCli([
+        "agent-upsert",
+        "--db",
+        dbPath,
+        "--stable-name",
+        "opencode-implementer",
+        "--display-name",
+        "OpenCode Implementer",
+        "--role",
+        "implementer",
+        "--client-type",
+        "opencode",
+        "--project",
+        "Vault Collab"
+      ])
+    );
+
+    expect(reviewer.clientType).toBe("claude-code");
+    expect(implementer.clientType).toBe("opencode");
+
+    const agents = parseJson<Array<{ agentUid: string; stableName: string }>>(
+      await runCli(["agents", "--db", dbPath, "--project", "Vault Collab"])
+    );
+    expect(agents.map((agent) => agent.stableName)).toEqual([
+      "claude-reviewer",
+      "opencode-implementer"
+    ]);
+
+    const claude = parseJson<{ sessionUid: string; sessionToken: string; agentUid: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Claude Code",
+        "--client-type",
+        "claude-code",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--agent-uid",
+        reviewer.agentUid
+      ])
+    );
+    const opencode = parseJson<{ sessionUid: string; sessionToken: string; agentUid: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "OpenCode",
+        "--client-type",
+        "opencode",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--agent-uid",
+        implementer.agentUid
+      ])
+    );
+
+    expect(claude.agentUid).toBe(reviewer.agentUid);
+    expect(opencode.agentUid).toBe(implementer.agentUid);
+
+    const published = parseJson<{
+      handoffUid: string;
+      queueKey: string;
+      labels: string[];
+      queuePosition: number;
+    }>(
+      await runCli([
+        "publish",
+        "--db",
+        dbPath,
+        "--short-prompt",
+        "Discuss CLI contract.",
+        "--source-project",
+        "Vault Collab",
+        "--target-project",
+        "Vault Collab",
+        "--source-session-uid",
+        claude.sessionUid,
+        "--queue-key",
+        "phase-1",
+        "--queue-position",
+        "500",
+        "--label",
+        "cli",
+        "--label",
+        "discussion"
+      ])
+    );
+
+    expect(published).toMatchObject({
+      queueKey: "phase-1",
+      labels: ["cli", "discussion"],
+      queuePosition: 500
+    });
+
+    const metadata = parseJson<{ labels: string[]; dependsOnHandoffUid: string }>(
+      await runCli([
+        "handoff-metadata",
+        "--db",
+        dbPath,
+        "--handoff-uid",
+        published.handoffUid,
+        "--session-uid",
+        claude.sessionUid,
+        "--session-token",
+        claude.sessionToken,
+        "--label",
+        "cli",
+        "--label",
+        "reviewed",
+        "--depends-on-handoff-uid",
+        "vc_handoff_previous"
+      ])
+    );
+    expect(metadata).toMatchObject({
+      labels: ["cli", "reviewed"],
+      dependsOnHandoffUid: "vc_handoff_previous"
+    });
+
+    const badCreate = await runCli([
+      "discussion-create",
+      "--db",
+      dbPath,
+      "--project",
+      "Vault Collab",
+      "--handoff-uid",
+      published.handoffUid,
+      "--title",
+      "Bad token",
+      "--session-uid",
+      claude.sessionUid,
+      "--session-token",
+      "bad-token"
+    ]);
+    expect(badCreate.exitCode).toBe(1);
+    expect(badCreate.stderr).toMatch(/invalid session token/i);
+    expect(badCreate.stderr).not.toContain("bad-token");
+
+    const thread = parseJson<{ threadUid: string }>(
+      await runCli([
+        "discussion-create",
+        "--db",
+        dbPath,
+        "--project",
+        "Vault Collab",
+        "--handoff-uid",
+        published.handoffUid,
+        "--title",
+        "CLI contract discussion",
+        "--session-uid",
+        claude.sessionUid,
+        "--session-token",
+        claude.sessionToken
+      ])
+    );
+
+    await runCli([
+      "discussion-add-message",
+      "--db",
+      dbPath,
+      "--thread-uid",
+      thread.threadUid,
+      "--session-uid",
+      opencode.sessionUid,
+      "--session-token",
+      opencode.sessionToken,
+      "--type",
+      "proposal",
+      "--body",
+      "Keep CLI commands flat and provider-neutral.",
+      "--metadata",
+      "source=cli-test"
+    ]);
+
+    const threads = parseJson<Array<{ threadUid: string; messageCount: number }>>(
+      await runCli([
+        "discussions",
+        "--db",
+        dbPath,
+        "--project",
+        "Vault Collab",
+        "--handoff-uid",
+        published.handoffUid
+      ])
+    );
+    const detail = parseJson<{
+      messages: Array<{ sessionUid: string; agentUid: string | null; metadata: Record<string, unknown> }>;
+    }>(await runCli(["discussion", "--db", dbPath, "--thread-uid", thread.threadUid]));
+
+    expect(threads).toEqual([
+      expect.objectContaining({
+        threadUid: thread.threadUid,
+        messageCount: 1
+      })
+    ]);
+    expect(detail.messages).toEqual([
+      expect.objectContaining({
+        sessionUid: opencode.sessionUid,
+        agentUid: implementer.agentUid,
+        metadata: {
+          source: "cli-test"
+        }
+      })
+    ]);
+    expect(JSON.stringify(agents)).not.toContain(claude.sessionToken);
+    expect(JSON.stringify(threads)).not.toContain(opencode.sessionToken);
+    expect(JSON.stringify(detail)).not.toContain(claude.sessionToken);
+    expect(JSON.stringify(detail)).not.toContain(opencode.sessionToken);
   });
 
   it("rejects unknown commands without creating a destructive escape hatch", async () => {

@@ -7,7 +7,8 @@ import type {
   HandoffPriority,
   HandoffRecord,
   HandoffStatus,
-  PublishHandoffInput
+  PublishHandoffInput,
+  UpdateHandoffMetadataInput
 } from "../types.js";
 
 interface HandoffRow {
@@ -21,6 +22,10 @@ interface HandoffRow {
   source_session_uid: string | null;
   suggested_session_uid: string | null;
   suggested_client_type: ClientType | null;
+  queue_key: string;
+  labels_json: string;
+  queue_position: number | null;
+  depends_on_handoff_uid: string | null;
   status: HandoffStatus;
   priority: HandoffPriority;
   urgent: 0 | 1;
@@ -55,6 +60,9 @@ export class HandoffService {
     const handoffUid = `vc_handoff_${randomUUID()}`;
     const priority = input.priority ?? "normal";
     const urgent = input.urgent ?? priority === "urgent";
+    const queueKey = input.queueKey ?? "default";
+    const queuePosition =
+      input.queuePosition ?? this.nextQueuePosition(input.targetProject, queueKey);
 
     this.db
       .prepare(
@@ -70,6 +78,10 @@ export class HandoffService {
           source_session_uid,
           suggested_session_uid,
           suggested_client_type,
+          queue_key,
+          labels_json,
+          queue_position,
+          depends_on_handoff_uid,
           status,
           priority,
           urgent,
@@ -84,7 +96,7 @@ export class HandoffService {
           resolved_at,
           stale_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -98,6 +110,10 @@ export class HandoffService {
         input.sourceSessionUid ?? null,
         input.suggestedSessionUid ?? null,
         input.suggestedClientType ?? null,
+        queueKey,
+        JSON.stringify(input.labels ?? []),
+        queuePosition,
+        input.dependsOnHandoffUid ?? null,
         "available",
         priority,
         urgent ? 1 : 0,
@@ -123,7 +139,7 @@ export class HandoffService {
         priority,
         urgent
       }
-    });
+      });
 
     return this.requireHandoff(handoffUid);
   }
@@ -140,6 +156,16 @@ export class HandoffService {
     if (filter.targetProject) {
       clauses.push("target_project = ?");
       params.push(filter.targetProject);
+    }
+
+    if (filter.queueKey) {
+      clauses.push("queue_key = ?");
+      params.push(filter.queueKey);
+    }
+
+    if (filter.label) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(labels_json) WHERE value = ?)");
+      params.push(filter.label);
     }
 
     if (filter.status) {
@@ -159,7 +185,12 @@ export class HandoffService {
         SELECT *
         FROM handoffs
         ${where}
-        ORDER BY urgent DESC, created_at ASC, handoff_uid ASC
+        ORDER BY urgent DESC,
+                 queue_key ASC,
+                 CASE WHEN queue_position IS NULL THEN 1 ELSE 0 END ASC,
+                 queue_position ASC,
+                 created_at ASC,
+                 handoff_uid ASC
       `
       )
       .all(...params) as HandoffRow[];
@@ -198,6 +229,63 @@ export class HandoffService {
       sessionUid,
       payload: {
         vaultMemoryUid
+      }
+    });
+
+    return this.requireHandoff(handoffUid);
+  }
+
+  updateHandoffMetadata(
+    handoffUid: string,
+    sessionUid: string,
+    sessionToken: string,
+    metadata: UpdateHandoffMetadataInput
+  ): HandoffRecord {
+    this.assertSessionOwner(sessionUid, sessionToken);
+    const handoff = this.findHandoffRow(handoffUid);
+    if (!handoff) {
+      throw new Error(`Handoff not found: ${handoffUid}`);
+    }
+
+    const isSourceOwner = handoff.source_session_uid === sessionUid;
+    const isClaimOwner = handoff.claimed_by_session_uid === sessionUid;
+    if (!isSourceOwner && !isClaimOwner) {
+      throw new Error("Handoff metadata can only be updated by source session or claimed session");
+    }
+
+    const now = this.now();
+    this.db
+      .prepare(
+        `
+        UPDATE handoffs
+        SET queue_key = ?,
+            labels_json = ?,
+            queue_position = ?,
+            depends_on_handoff_uid = ?,
+            updated_at = ?
+        WHERE handoff_uid = ?
+      `
+      )
+      .run(
+        metadata.queueKey ?? handoff.queue_key,
+        JSON.stringify(metadata.labels ?? (JSON.parse(handoff.labels_json) as string[])),
+        metadata.queuePosition === undefined ? handoff.queue_position : metadata.queuePosition,
+        metadata.dependsOnHandoffUid === undefined
+          ? handoff.depends_on_handoff_uid
+          : metadata.dependsOnHandoffUid,
+        now,
+        handoffUid
+      );
+
+    this.events.recordEvent({
+      eventType: "handoff.metadata_updated",
+      handoffUid,
+      sessionUid,
+      payload: {
+        queueKey: metadata.queueKey,
+        labels: metadata.labels,
+        queuePosition: metadata.queuePosition,
+        dependsOnHandoffUid: metadata.dependsOnHandoffUid
       }
     });
 
@@ -568,6 +656,10 @@ export class HandoffService {
       sourceSessionUid: row.source_session_uid,
       suggestedSessionUid: row.suggested_session_uid,
       suggestedClientType: row.suggested_client_type,
+      queueKey: row.queue_key,
+      labels: JSON.parse(row.labels_json) as string[],
+      queuePosition: row.queue_position,
+      dependsOnHandoffUid: row.depends_on_handoff_uid,
       status: row.status,
       priority: row.priority,
       urgent: row.urgent === 1,
@@ -585,5 +677,20 @@ export class HandoffService {
 
   private now(): string {
     return this.clock().toISOString();
+  }
+
+  private nextQueuePosition(targetProject: string, queueKey: string): number {
+    const row = this.db
+      .prepare(
+        `
+        SELECT MAX(queue_position) AS max_position
+        FROM handoffs
+        WHERE target_project = ?
+          AND queue_key = ?
+      `
+      )
+      .get(targetProject, queueKey) as { max_position: number | null } | undefined;
+
+    return (row?.max_position ?? 0) + 1000;
   }
 }

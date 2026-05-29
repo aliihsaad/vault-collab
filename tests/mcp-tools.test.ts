@@ -48,11 +48,20 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_update_session_state",
       "vault_collab_list_sessions",
       "vault_collab_disconnect_session",
+      "vault_collab_list_agent_roles",
+      "vault_collab_upsert_agent_profile",
+      "vault_collab_list_agent_profiles",
       "vault_collab_publish_handoff",
       "vault_collab_publish_handoff_with_vault_memory",
       "vault_collab_link_vault_memory",
       "vault_collab_list_inbox",
       "vault_collab_get_handoff",
+      "vault_collab_get_handoff_detail",
+      "vault_collab_update_handoff_metadata",
+      "vault_collab_create_discussion_thread",
+      "vault_collab_add_discussion_message",
+      "vault_collab_list_discussion_threads",
+      "vault_collab_get_discussion_thread",
       "vault_collab_list_events",
       "vault_collab_claim_handoff",
       "vault_collab_update_handoff",
@@ -61,9 +70,13 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_reopen_handoff",
       "vault_collab_release_handoff"
     ]);
-    expect(vaultCollabToolNames.some((name) => /clean|delete|manager|worker|inspector/i.test(name))).toBe(
-      false
-    );
+    expect(
+      vaultCollabToolNames.some((name) =>
+        /clean|delete|manager|worker|inspector|auto_claim|auto_execute|assign|interrupt|run_handoff|execute_handoff/i.test(
+          name
+        )
+      )
+    ).toBe(false);
   });
 
   it("documents register session inputs including capabilities and aliases", () => {
@@ -78,6 +91,8 @@ describe("Vault Collab MCP tools", () => {
         "project",
         "workspacePath",
         "workspace_path",
+        "agentUid",
+        "agent_uid",
         "capabilities"
       ])
     );
@@ -129,6 +144,170 @@ describe("Vault Collab MCP tools", () => {
       lastHeartbeatAt: "2026-05-28T10:00:02.000Z"
     });
     expect(events.map((event) => event.eventType)).toEqual(["session.registered"]);
+  });
+
+  it("runs a provider-neutral agent, queue, and discussion workflow through MCP tools", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const roles = structured<Array<{ role: string }>>(
+      await tools.callTool("vault_collab_list_agent_roles", {})
+    );
+    expect(roles.map((role) => role.role)).toEqual([
+      "coordinator",
+      "implementer",
+      "reviewer",
+      "sweeper",
+      "observer"
+    ]);
+
+    const reviewer = structured<{ agentUid: string; clientType: string }>(
+      await tools.callTool("vault_collab_upsert_agent_profile", {
+        stableName: "claude-reviewer",
+        displayName: "Claude Reviewer",
+        role: "reviewer",
+        clientType: "claude-code",
+        project: "Vault Collab",
+        capabilities: {
+          review: true
+        }
+      })
+    );
+    const implementer = structured<{ agentUid: string; clientType: string }>(
+      await tools.callTool("vault_collab_upsert_agent_profile", {
+        stable_name: "opencode-implementer",
+        display_name: "OpenCode Implementer",
+        role: "implementer",
+        client_type: "opencode",
+        project: "Vault Collab"
+      })
+    );
+
+    expect(reviewer).toMatchObject({
+      clientType: "claude-code"
+    });
+    expect(implementer).toMatchObject({
+      clientType: "opencode"
+    });
+
+    const claude = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Claude Code",
+        clientType: "claude-code",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        agentUid: reviewer.agentUid
+      })
+    );
+    const opencode = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "OpenCode",
+        clientType: "opencode",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        agent_uid: implementer.agentUid
+      })
+    );
+
+    const published = structured<{
+      handoffUid: string;
+      queueKey: string;
+      labels: string[];
+      queuePosition: number;
+    }>(
+      await tools.callTool("vault_collab_publish_handoff", {
+        shortPrompt: "Discuss MCP contract",
+        sourceProject: "Vault Collab",
+        targetProject: "Vault Collab",
+        sourceSessionUid: claude.sessionUid,
+        queueKey: "phase-1",
+        labels: ["mcp", "discussion"],
+        queuePosition: 500
+      })
+    );
+
+    expect(published).toMatchObject({
+      queueKey: "phase-1",
+      labels: ["mcp", "discussion"],
+      queuePosition: 500
+    });
+
+    const metadata = structured<{ labels: string[]; dependsOnHandoffUid: string }>(
+      await tools.callTool("vault_collab_update_handoff_metadata", {
+        handoffUid: published.handoffUid,
+        sessionUid: claude.sessionUid,
+        sessionToken: claude.sessionToken,
+        labels: ["mcp", "reviewed"],
+        dependsOnHandoffUid: "vc_handoff_previous"
+      })
+    );
+    expect(metadata).toMatchObject({
+      labels: ["mcp", "reviewed"],
+      dependsOnHandoffUid: "vc_handoff_previous"
+    });
+
+    const thread = structured<{ threadUid: string; messageCount: number }>(
+      await tools.callTool("vault_collab_create_discussion_thread", {
+        project: "Vault Collab",
+        handoffUid: published.handoffUid,
+        title: "MCP contract discussion",
+        sessionUid: claude.sessionUid,
+        sessionToken: claude.sessionToken
+      })
+    );
+    expect(thread.messageCount).toBe(0);
+
+    await tools.callTool("vault_collab_add_discussion_message", {
+      threadUid: thread.threadUid,
+      sessionUid: opencode.sessionUid,
+      sessionToken: opencode.sessionToken,
+      messageType: "proposal",
+      body: "Keep this provider-neutral."
+    });
+
+    const threadDetail = structured<{
+      threadUid: string;
+      messages: Array<{ sessionUid: string; agentUid: string | null; messageType: string }>;
+    }>(
+      await tools.callTool("vault_collab_get_discussion_thread", {
+        threadUid: thread.threadUid
+      })
+    );
+    expect(threadDetail.messages).toEqual([
+      expect.objectContaining({
+        sessionUid: opencode.sessionUid,
+        agentUid: implementer.agentUid,
+        messageType: "proposal"
+      })
+    ]);
+
+    const detail = structured<{
+      discussionThreads: Array<{ threadUid: string; messageCount: number }>;
+    }>(
+      await tools.callTool("vault_collab_get_handoff_detail", {
+        handoffUid: published.handoffUid
+      })
+    );
+    expect(detail.discussionThreads).toEqual([
+      expect.objectContaining({
+        threadUid: thread.threadUid,
+        messageCount: 1
+      })
+    ]);
+
+    const badToken = "secret-token-that-must-not-leak";
+    const failed = await tools.callTool("vault_collab_add_discussion_message", {
+      threadUid: thread.threadUid,
+      sessionUid: opencode.sessionUid,
+      sessionToken: badToken,
+      messageType: "concern",
+      body: "This should fail."
+    });
+
+    expect(failed.isError).toBe(true);
+    expect(JSON.stringify(failed)).not.toContain(badToken);
+    expect(JSON.stringify(threadDetail)).not.toContain(claude.sessionToken);
+    expect(JSON.stringify(threadDetail)).not.toContain(opencode.sessionToken);
   });
 
   it("stops automatic heartbeat after explicit disconnect", async () => {
@@ -362,6 +541,43 @@ describe("Vault Collab MCP tools", () => {
       handoffUid: published.handoffUid,
       status: "available"
     });
+
+    const detail = structured<{
+      handoff: { handoffUid: string; status: string };
+      events: Array<{ eventType: string }>;
+      sessions: {
+        sourceSession: { sessionUid: string; sessionToken?: string } | null;
+        suggestedSession: { sessionUid: string; sessionToken?: string } | null;
+        claimedBySession: { sessionUid: string; sessionToken?: string } | null;
+      };
+    }>(
+      await tools.callTool("vault_collab_get_handoff_detail", {
+        handoffUid: published.handoffUid
+      })
+    );
+
+    expect(detail.handoff).toMatchObject({
+      handoffUid: published.handoffUid,
+      status: "available"
+    });
+    expect(detail.events.map((event) => event.eventType)).toEqual([
+      "handoff.published",
+      "handoff.vault_memory_linked",
+      "handoff.claimed",
+      "handoff.user_confirmation_requested",
+      "handoff.released",
+      "handoff.claimed",
+      "handoff.updated",
+      "handoff.resolved",
+      "handoff.reopened"
+    ]);
+    expect(detail.sessions.sourceSession).toMatchObject({
+      sessionUid: codex.sessionUid
+    });
+    expect(detail.sessions.suggestedSession).toBeNull();
+    expect(detail.sessions.claimedBySession).toBeNull();
+    expect(JSON.stringify(detail)).not.toContain(codex.sessionToken);
+    expect(JSON.stringify(detail)).not.toContain(claude.sessionToken);
 
     const handoffEvents = structured<Array<{ eventType: string; sessionUid: string | null }>>(
       await tools.callTool("vault_collab_list_events", {

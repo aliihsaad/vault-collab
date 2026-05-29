@@ -20,6 +20,10 @@ interface SessionRow {
   status: SessionStatus;
   status_detail: string | null;
   capabilities_json: string;
+  agent_uid: string | null;
+  agent_stable_name: string | null;
+  agent_display_name: string | null;
+  agent_role: string | null;
   current_handoff_uid: string | null;
   session_token: string;
   last_heartbeat_at: string;
@@ -52,6 +56,7 @@ export class SessionService {
           status,
           status_detail,
           capabilities_json,
+          agent_uid,
           current_handoff_uid,
           session_token,
           last_heartbeat_at,
@@ -59,7 +64,7 @@ export class SessionService {
           updated_at,
           disconnected_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -71,6 +76,7 @@ export class SessionService {
         "idle",
         null,
         JSON.stringify(input.capabilities ?? {}),
+        input.agentUid ?? null,
         null,
         sessionToken,
         now,
@@ -184,17 +190,17 @@ export class SessionService {
     const params: string[] = [];
 
     if (filter.project) {
-      clauses.push("project = ?");
+      clauses.push("sessions.project = ?");
       params.push(filter.project);
     }
 
     if (filter.clientType) {
-      clauses.push("client_type = ?");
+      clauses.push("sessions.client_type = ?");
       params.push(filter.clientType);
     }
 
     if (filter.status) {
-      clauses.push("status = ?");
+      clauses.push("sessions.status = ?");
       params.push(filter.status);
     }
 
@@ -202,15 +208,21 @@ export class SessionService {
     const rows = this.db
       .prepare(
         `
-        SELECT *
+        ${this.sessionSelect()}
         FROM sessions
+        LEFT JOIN agent_profiles ON agent_profiles.agent_uid = sessions.agent_uid
         ${where}
-        ORDER BY created_at ASC, session_uid ASC
+        ORDER BY sessions.created_at ASC, sessions.session_uid ASC
       `
       )
       .all(...params) as SessionRow[];
 
     return rows.map((row) => this.mapPublicSession(row));
+  }
+
+  getSession(sessionUid: string): SessionSnapshot | null {
+    const row = this.findSessionRow(sessionUid);
+    return row ? this.mapPublicSession(row) : null;
   }
 
   private assertOwnedSession(sessionUid: string, sessionToken: string): SessionRow {
@@ -236,9 +248,16 @@ export class SessionService {
   }
 
   private findSessionRow(sessionUid: string): SessionRow | undefined {
-    return this.db.prepare("SELECT * FROM sessions WHERE session_uid = ?").get(sessionUid) as
-      | SessionRow
-      | undefined;
+    return this.db
+      .prepare(
+        `
+        ${this.sessionSelect()}
+        FROM sessions
+        LEFT JOIN agent_profiles ON agent_profiles.agent_uid = sessions.agent_uid
+        WHERE sessions.session_uid = ?
+      `
+      )
+      .get(sessionUid) as SessionRow | undefined;
   }
 
   private mapRegisteredSession(row: SessionRow): RegisteredSession {
@@ -258,6 +277,10 @@ export class SessionService {
       status: row.status,
       statusDetail: row.status_detail,
       capabilities: JSON.parse(row.capabilities_json) as JsonRecord,
+      agentUid: row.agent_uid,
+      agentName: row.agent_stable_name,
+      agentDisplayName: row.agent_display_name,
+      agentRole: row.agent_role,
       currentHandoffUid: row.current_handoff_uid,
       lastHeartbeatAt: row.last_heartbeat_at,
       createdAt: row.created_at,
@@ -268,5 +291,29 @@ export class SessionService {
 
   private now(): string {
     return this.clock().toISOString();
+  }
+
+  private sessionSelect(): string {
+    return `
+        SELECT
+          sessions.session_uid,
+          sessions.display_name,
+          sessions.client_type,
+          sessions.project,
+          sessions.workspace_path,
+          sessions.status,
+          sessions.status_detail,
+          sessions.capabilities_json,
+          sessions.agent_uid,
+          agent_profiles.stable_name AS agent_stable_name,
+          agent_profiles.display_name AS agent_display_name,
+          agent_profiles.role AS agent_role,
+          sessions.current_handoff_uid,
+          sessions.session_token,
+          sessions.last_heartbeat_at,
+          sessions.created_at,
+          sessions.updated_at,
+          sessions.disconnected_at
+    `;
   }
 }

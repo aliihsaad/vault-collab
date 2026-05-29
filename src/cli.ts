@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import { createCollabDatabase } from "./database/connection.js";
+import { AgentProfileService } from "./services/agent-profile.service.js";
+import { DiscussionService } from "./services/discussion.service.js";
 import { EventService } from "./services/event.service.js";
+import { HandoffDetailService } from "./services/handoff-detail.service.js";
 import { HandoffService } from "./services/handoff.service.js";
 import { SessionService } from "./services/session.service.js";
 import type {
+  AgentProfileStatus,
   ClientType,
+  DiscussionMessageType,
+  DiscussionThreadStatus,
   HandoffPriority,
   HandoffStatus,
   JsonRecord,
@@ -24,8 +30,11 @@ interface ParsedCommand {
 }
 
 interface Services {
+  agents: AgentProfileService;
   sessions: SessionService;
   handoffs: HandoffService;
+  handoffDetails: HandoffDetailService;
+  discussions: DiscussionService;
   events: EventService;
   close: () => void;
 }
@@ -37,9 +46,18 @@ const commands = new Set([
   "sessions",
   "state",
   "disconnect",
+  "roles",
+  "agent-upsert",
+  "agents",
   "publish",
   "link-vault-memory",
   "inbox",
+  "handoff",
+  "handoff-metadata",
+  "discussion-create",
+  "discussion-add-message",
+  "discussions",
+  "discussion",
   "events",
   "claim",
   "update",
@@ -89,6 +107,7 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         clientType: optionClientType(parsed, "client-type"),
         project: requiredOption(parsed, "project"),
         workspacePath: requiredOption(parsed, "workspace-path"),
+        agentUid: optionalOption(parsed, "agent-uid") ?? null,
         capabilities: parseCapabilities(parsed.options.get("capability") ?? [])
       });
 
@@ -119,6 +138,29 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         requiredOption(parsed, "session-token")
       );
 
+    case "roles":
+      return services.agents.listRoleDefinitions();
+
+    case "agent-upsert":
+      return services.agents.upsertAgentProfile({
+        stableName: requiredOption(parsed, "stable-name"),
+        displayName: requiredOption(parsed, "display-name"),
+        role: optionalOption(parsed, "role") ?? "implementer",
+        clientType: optionalClientType(parsed, "client-type") ?? null,
+        project: optionalOption(parsed, "project") ?? null,
+        description: optionalOption(parsed, "description") ?? null,
+        capabilities: parseCapabilities(parsed.options.get("capability") ?? []),
+        status: optionalAgentProfileStatus(parsed, "status") ?? "active",
+        createdBySessionUid: optionalOption(parsed, "created-by-session-uid") ?? null
+      });
+
+    case "agents":
+      return services.agents.listAgentProfiles({
+        project: optionalOption(parsed, "project"),
+        role: optionalOption(parsed, "role"),
+        status: optionalAgentProfileStatus(parsed, "status")
+      });
+
     case "publish":
       return services.handoffs.publishHandoff({
         shortPrompt: requiredOption(parsed, "short-prompt"),
@@ -130,6 +172,10 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         suggestedSessionUid: optionalOption(parsed, "suggested-session-uid") ?? null,
         suggestedClientType: optionalClientType(parsed, "suggested-client-type") ?? null,
         vaultMemoryUid: optionalOption(parsed, "vault-memory-uid") ?? null,
+        queueKey: optionalOption(parsed, "queue-key") ?? undefined,
+        labels: parsed.options.get("label") ?? undefined,
+        queuePosition: optionalNumberOption(parsed, "queue-position"),
+        dependsOnHandoffUid: optionalOption(parsed, "depends-on-handoff-uid") ?? null,
         priority: optionalHandoffPriority(parsed, "priority") ?? "normal",
         urgent: parsed.options.has("urgent")
       });
@@ -146,9 +192,58 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
       return services.handoffs.listInbox({
         sourceProject: optionalOption(parsed, "source-project"),
         targetProject: optionalOption(parsed, "target-project"),
+        queueKey: optionalOption(parsed, "queue-key"),
+        label: optionalOption(parsed, "label"),
         status: optionalHandoffStatus(parsed, "status"),
         includeResolved: parsed.options.has("include-resolved")
       });
+
+    case "handoff":
+      return services.handoffDetails.getHandoffDetail(requiredOption(parsed, "handoff-uid"));
+
+    case "handoff-metadata":
+      return services.handoffs.updateHandoffMetadata(
+        requiredOption(parsed, "handoff-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        {
+          queueKey: optionalOption(parsed, "queue-key"),
+          labels: parsed.options.get("label") ?? undefined,
+          queuePosition: optionalNumberOption(parsed, "queue-position"),
+          dependsOnHandoffUid: optionalOption(parsed, "depends-on-handoff-uid")
+        }
+      );
+
+    case "discussion-create":
+      return services.discussions.createThread({
+        project: requiredOption(parsed, "project"),
+        handoffUid: optionalOption(parsed, "handoff-uid") ?? null,
+        title: requiredOption(parsed, "title"),
+        createdBySessionUid: requiredOption(parsed, "session-uid"),
+        sessionToken: requiredOption(parsed, "session-token")
+      });
+
+    case "discussion-add-message":
+      return services.discussions.addMessage(
+        requiredOption(parsed, "thread-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        {
+          messageType: optionDiscussionMessageType(parsed, "type"),
+          body: requiredOption(parsed, "body"),
+          metadata: parseCapabilities(parsed.options.get("metadata") ?? [])
+        }
+      );
+
+    case "discussions":
+      return services.discussions.listThreads({
+        project: optionalOption(parsed, "project"),
+        handoffUid: optionalOption(parsed, "handoff-uid"),
+        status: optionalDiscussionThreadStatus(parsed, "status")
+      });
+
+    case "discussion":
+      return services.discussions.getThread(requiredOption(parsed, "thread-uid"));
 
     case "events":
       return services.events.listEvents({
@@ -195,10 +290,17 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
 function createServices(dbPath: string): Services {
   const db = createCollabDatabase(dbPath);
   const events = new EventService(db);
+  const agents = new AgentProfileService(db, events);
+  const sessions = new SessionService(db, events);
+  const handoffs = new HandoffService(db, events);
+  const discussions = new DiscussionService(db, events);
 
   return {
-    sessions: new SessionService(db, events),
-    handoffs: new HandoffService(db, events),
+    agents,
+    sessions,
+    handoffs,
+    handoffDetails: new HandoffDetailService(handoffs, events, sessions, discussions),
+    discussions,
     events,
     close: () => db.close()
   };
@@ -254,6 +356,20 @@ function requiredOption(parsed: ParsedCommand, name: string): string {
 
 function optionalOption(parsed: ParsedCommand, name: string): string | undefined {
   return parsed.options.get(name)?.at(-1);
+}
+
+function optionalNumberOption(parsed: ParsedCommand, name: string): number | undefined {
+  const value = optionalOption(parsed, name);
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsedNumber = Number(value);
+  if (!Number.isInteger(parsedNumber)) {
+    throw new Error(`Invalid number for --${name}: ${value}`);
+  }
+
+  return parsedNumber;
 }
 
 function parseCapabilities(values: string[]): JsonRecord {
@@ -380,6 +496,57 @@ function parseHandoffPriority(value: string): HandoffPriority {
   }
 
   return value as HandoffPriority;
+}
+
+function optionalAgentProfileStatus(
+  parsed: ParsedCommand,
+  name: string
+): AgentProfileStatus | undefined {
+  const value = optionalOption(parsed, name);
+  return value ? parseAgentProfileStatus(value) : undefined;
+}
+
+function parseAgentProfileStatus(value: string): AgentProfileStatus {
+  const allowed: AgentProfileStatus[] = ["active", "archived"];
+  if (!allowed.includes(value as AgentProfileStatus)) {
+    throw new Error(`Invalid agent profile status: ${value}`);
+  }
+
+  return value as AgentProfileStatus;
+}
+
+function optionDiscussionMessageType(parsed: ParsedCommand, name: string): DiscussionMessageType {
+  const value = requiredOption(parsed, name);
+  const allowed: DiscussionMessageType[] = [
+    "note",
+    "question",
+    "proposal",
+    "concern",
+    "decision",
+    "system"
+  ];
+  if (!allowed.includes(value as DiscussionMessageType)) {
+    throw new Error(`Invalid discussion message type: ${value}`);
+  }
+
+  return value as DiscussionMessageType;
+}
+
+function optionalDiscussionThreadStatus(
+  parsed: ParsedCommand,
+  name: string
+): DiscussionThreadStatus | undefined {
+  const value = optionalOption(parsed, name);
+  return value ? parseDiscussionThreadStatus(value) : undefined;
+}
+
+function parseDiscussionThreadStatus(value: string): DiscussionThreadStatus {
+  const allowed: DiscussionThreadStatus[] = ["open", "resolved"];
+  if (!allowed.includes(value as DiscussionThreadStatus)) {
+    throw new Error(`Invalid discussion thread status: ${value}`);
+  }
+
+  return value as DiscussionThreadStatus;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

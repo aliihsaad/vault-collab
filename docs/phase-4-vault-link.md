@@ -5,8 +5,9 @@ goal is to keep short local inbox records fast and inspectable while allowing a
 full handoff brief to live in Vault memory.
 
 This phase does not add auto-execution, Vault Desktop UI, Graphify enrichment,
-Octogent bridging, delete/clean behavior, fixed agent roles, or automatic
-mutation of agent instruction files.
+Octogent bridging, delete/clean behavior, hard-coded agent classes, automatic
+claiming, active-session interruption, or automatic mutation of agent
+instruction files.
 
 ## Boundary
 
@@ -54,14 +55,14 @@ If the full brief already exists in Vault memory, publish the handoff with that
 memory UID:
 
 ```powershell
-node dist\cli.js publish --db $db --short-prompt "Continue Phase 4 Vault link docs." --source-project "Vault Collab" --target-project "Vault Collab" --source-session-uid vc_session_... --vault-memory-uid vm_...
+node dist\cli.js publish --db $db --short-prompt "Continue Phase 4 Vault link docs." --source-project "Vault Collab" --target-project "Vault Collab" --source-session-uid vc_sess_... --vault-memory-uid vm_...
 ```
 
 If the handoff was already published, link it afterward as the source session
 owner:
 
 ```powershell
-node dist\cli.js link-vault-memory --db $db --handoff-uid vc_handoff_... --session-uid vc_session_... --session-token ... --vault-memory-uid vm_...
+node dist\cli.js link-vault-memory --db $db --handoff-uid vc_handoff_... --session-uid vc_sess_... --session-token ... --vault-memory-uid vm_...
 ```
 
 The manual link command:
@@ -77,7 +78,7 @@ Inspect the inbox and event history:
 ```powershell
 node dist\cli.js inbox --db $db --target-project "Vault Collab"
 node dist\cli.js events --db $db --handoff-uid vc_handoff_...
-node dist\cli.js events --db $db --session-uid vc_session_...
+node dist\cli.js events --db $db --session-uid vc_sess_...
 ```
 
 Event output is read-only and does not include session tokens.
@@ -104,6 +105,7 @@ Relevant Phase 4 tools:
 - `vault_collab_publish_handoff_with_vault_memory`
 - `vault_collab_link_vault_memory`
 - `vault_collab_get_handoff`
+- `vault_collab_get_handoff_detail`
 - `vault_collab_list_events`
 
 Use `vault_collab_publish_handoff` with `vaultMemoryUid` when a Vault memory item
@@ -114,7 +116,7 @@ already exists:
   "shortPrompt": "Continue Phase 4 Vault link docs.",
   "sourceProject": "Vault Collab",
   "targetProject": "Vault Collab",
-  "sourceSessionUid": "vc_session_...",
+  "sourceSessionUid": "vc_sess_...",
   "vaultMemoryUid": "vm_..."
 }
 ```
@@ -124,7 +126,7 @@ Use `vault_collab_link_vault_memory` when a local handoff already exists:
 ```json
 {
   "handoffUid": "vc_handoff_...",
-  "sessionUid": "vc_session_...",
+  "sessionUid": "vc_sess_...",
   "sessionToken": "...",
   "vaultMemoryUid": "vm_..."
 }
@@ -142,7 +144,17 @@ or:
 
 ```json
 {
-  "sessionUid": "vc_session_..."
+  "sessionUid": "vc_sess_..."
+}
+```
+
+Use `vault_collab_get_handoff_detail` to read a selected local handoff together
+with its lifecycle events, related public session snapshots, and discussion
+thread summaries:
+
+```json
+{
+  "handoffUid": "vc_handoff_..."
 }
 ```
 
@@ -170,11 +182,33 @@ Without an injected client, this tool returns an explicit configuration error.
 That is intentional: the standalone server should not silently reach into an
 unconfigured memory backend.
 
+## V2 Coordination Metadata
+
+Vault memory remains the durable place for full briefs, final summaries,
+decisions, and implementation handoffs. Vault Collab v2 adds live coordination
+metadata around those handoffs:
+
+- Agent profiles identify durable local agent identities across provider
+  sessions.
+- Session binding links a current session to an optional agent profile.
+- Queue metadata labels and orders handoffs without changing lifecycle
+  ownership rules.
+- Discussion threads/messages capture proposals, concerns, and decisions around
+  a project or handoff.
+
+These records can link back to Vault memory through `vaultMemoryUid`, but Vault
+Collab does not replace Vault memory or Graphify. Graphify remains an optional
+The Vault sidecar for structural context; the Vault Collab package does not
+depend on it.
+
 ## Safety Rules
 
 - Vault Collab never deletes handoffs, sessions, or events in Phase 4.
 - Claiming and lifecycle updates require the claiming session token.
 - Manual Vault memory linking requires the source session token.
+- Discussion thread creation and message append require the authoring session
+  token.
 - Event history is append-only and inspectable through CLI/MCP.
+- Discussion messages are append-only in v2 Phase 1.
 - A short local handoff remains useful even when the full Vault memory brief is
   unavailable.

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCollabDatabase, type CollabDatabase } from "../src/database/connection.js";
+import { AgentProfileService } from "../src/services/agent-profile.service.js";
 import { EventService } from "../src/services/event.service.js";
 import { SessionService } from "../src/services/session.service.js";
 
@@ -8,13 +9,17 @@ const workspacePath = "C:\\workspace\\vault-collab";
 describe("SessionService", () => {
   let db: CollabDatabase;
   let now: Date;
+  let events: EventService;
+  let agents: AgentProfileService;
   let service: SessionService;
 
   beforeEach(() => {
     now = new Date("2026-05-28T10:00:00.000Z");
     db = createCollabDatabase(":memory:");
     const clock = () => now;
-    service = new SessionService(db, new EventService(db, clock), clock);
+    events = new EventService(db, clock);
+    agents = new AgentProfileService(db, events, clock);
+    service = new SessionService(db, events, clock);
   });
 
   afterEach(() => {
@@ -59,6 +64,47 @@ describe("SessionService", () => {
         maxConcurrentHandoffs: 1
       },
       disconnectedAt: null
+    });
+    expect(sessions[0]).not.toHaveProperty("sessionToken");
+  });
+
+  it("binds a session to a durable agent profile without leaking its token", () => {
+    const agent = agents.upsertAgentProfile({
+      stableName: "repo-coordinator",
+      displayName: "Repo Coordinator",
+      role: "coordinator",
+      clientType: "codex",
+      project: "Vault Collab",
+      capabilities: {
+        handoffs: true
+      }
+    });
+
+    const registered = service.registerSession({
+      displayName: "Codex terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {
+        handoffs: true
+      },
+      agentUid: agent.agentUid
+    });
+
+    const sessions = service.listSessions();
+
+    expect(registered).toMatchObject({
+      agentUid: agent.agentUid,
+      agentName: "repo-coordinator",
+      agentDisplayName: "Repo Coordinator",
+      agentRole: "coordinator"
+    });
+    expect(sessions[0]).toMatchObject({
+      sessionUid: registered.sessionUid,
+      agentUid: agent.agentUid,
+      agentName: "repo-coordinator",
+      agentDisplayName: "Repo Coordinator",
+      agentRole: "coordinator"
     });
     expect(sessions[0]).not.toHaveProperty("sessionToken");
   });

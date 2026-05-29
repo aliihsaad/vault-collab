@@ -1,12 +1,18 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { createCollabDatabase, type CollabDatabase } from "../database/connection.js";
+import { AgentProfileService } from "../services/agent-profile.service.js";
+import { DiscussionService } from "../services/discussion.service.js";
 import { EventService } from "../services/event.service.js";
+import { HandoffDetailService } from "../services/handoff-detail.service.js";
 import { HandoffService } from "../services/handoff.service.js";
 import { SessionService } from "../services/session.service.js";
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../services/vault-link.service.js";
 import type {
+  AgentProfileStatus,
   ClientType,
+  DiscussionMessageType,
+  DiscussionThreadStatus,
   HandoffPriority,
   HandoffStatus,
   JsonRecord,
@@ -19,11 +25,20 @@ export const vaultCollabToolNames = [
   "vault_collab_update_session_state",
   "vault_collab_list_sessions",
   "vault_collab_disconnect_session",
+  "vault_collab_list_agent_roles",
+  "vault_collab_upsert_agent_profile",
+  "vault_collab_list_agent_profiles",
   "vault_collab_publish_handoff",
   "vault_collab_publish_handoff_with_vault_memory",
   "vault_collab_link_vault_memory",
   "vault_collab_list_inbox",
   "vault_collab_get_handoff",
+  "vault_collab_get_handoff_detail",
+  "vault_collab_update_handoff_metadata",
+  "vault_collab_create_discussion_thread",
+  "vault_collab_add_discussion_message",
+  "vault_collab_list_discussion_threads",
+  "vault_collab_get_discussion_thread",
   "vault_collab_list_events",
   "vault_collab_claim_handoff",
   "vault_collab_update_handoff",
@@ -141,11 +156,27 @@ const handoffPriorityValues = [
   "high",
   "urgent"
 ] as const satisfies readonly HandoffPriority[];
+const agentProfileStatusValues = ["active", "archived"] as const satisfies readonly AgentProfileStatus[];
+const discussionThreadStatusValues = [
+  "open",
+  "resolved"
+] as const satisfies readonly DiscussionThreadStatus[];
+const discussionMessageTypeValues = [
+  "note",
+  "question",
+  "proposal",
+  "concern",
+  "decision",
+  "system"
+] as const satisfies readonly DiscussionMessageType[];
 
 const clientTypeSchema = z.enum(clientTypeValues);
 const sessionStatusSchema = z.enum(sessionStatusValues);
 const handoffStatusSchema = z.enum(handoffStatusValues);
 const handoffPrioritySchema = z.enum(handoffPriorityValues);
+const agentProfileStatusSchema = z.enum(agentProfileStatusValues);
+const discussionThreadStatusSchema = z.enum(discussionThreadStatusValues);
+const discussionMessageTypeSchema = z.enum(discussionMessageTypeValues);
 
 function requiredStringSchema(description: string): z.ZodString {
   return z.string().min(1).describe(description);
@@ -163,6 +194,10 @@ function optionalBooleanSchema(description: string): z.ZodOptional<z.ZodBoolean>
   return z.boolean().describe(description).optional();
 }
 
+function optionalNumberSchema(description: string): z.ZodOptional<z.ZodNumber> {
+  return z.number().int().describe(description).optional();
+}
+
 const registerSessionInputSchema = z.object({
   displayName: optionalStringSchema("Required if display_name is omitted. Human-readable session name."),
   display_name: optionalStringSchema("Snake_case alias for displayName."),
@@ -171,6 +206,8 @@ const registerSessionInputSchema = z.object({
   project: requiredStringSchema("Project name this session is working in."),
   workspacePath: optionalStringSchema("Required if workspace_path is omitted. Local workspace path."),
   workspace_path: optionalStringSchema("Snake_case alias for workspacePath."),
+  agentUid: optionalStringSchema("Optional durable agent profile identifier."),
+  agent_uid: optionalStringSchema("Snake_case alias for agentUid."),
   capabilities: z.record(z.unknown()).describe("Optional provider-neutral capability flags.").optional()
 });
 
@@ -195,6 +232,33 @@ const listSessionsInputSchema = z.object({
   status: sessionStatusSchema.describe("Optional session status filter.").optional()
 });
 
+const listAgentRolesInputSchema = z.object({
+  includeCustom: optionalBooleanSchema("Reserved for future custom role discovery."),
+  include_custom: optionalBooleanSchema("Snake_case alias for includeCustom.")
+});
+
+const upsertAgentProfileInputSchema = z.object({
+  stableName: optionalStringSchema("Required if stable_name is omitted. Durable agent stable name."),
+  stable_name: optionalStringSchema("Snake_case alias for stableName."),
+  displayName: optionalStringSchema("Required if display_name is omitted. Durable agent display name."),
+  display_name: optionalStringSchema("Snake_case alias for displayName."),
+  role: optionalStringSchema("Agent role label. Built-in roles and custom strings are accepted."),
+  clientType: clientTypeSchema.describe("Optional preferred provider/client identifier.").optional(),
+  client_type: clientTypeSchema.describe("Snake_case alias for clientType.").optional(),
+  project: optionalStringSchema("Optional home project."),
+  description: optionalStringSchema("Optional profile description."),
+  capabilities: z.record(z.unknown()).describe("Optional provider-neutral capability flags.").optional(),
+  status: agentProfileStatusSchema.describe("Optional profile lifecycle status.").optional(),
+  createdBySessionUid: optionalStringSchema("Optional creating session identifier."),
+  created_by_session_uid: optionalStringSchema("Snake_case alias for createdBySessionUid.")
+});
+
+const listAgentProfilesInputSchema = z.object({
+  project: optionalStringSchema("Optional home project filter."),
+  role: optionalStringSchema("Optional role filter."),
+  status: agentProfileStatusSchema.describe("Optional profile status filter.").optional()
+});
+
 const publishHandoffInputSchema = z.object({
   shortPrompt: optionalStringSchema("Required if short_prompt is omitted. Short handoff prompt."),
   short_prompt: optionalStringSchema("Snake_case alias for shortPrompt."),
@@ -214,6 +278,13 @@ const publishHandoffInputSchema = z.object({
   suggested_client_type: clientTypeSchema.describe("Snake_case alias for suggestedClientType.").optional(),
   vaultMemoryUid: optionalStringSchema("Optional existing Vault memory item UID for a full brief."),
   vault_memory_uid: optionalStringSchema("Snake_case alias for vaultMemoryUid."),
+  queueKey: optionalStringSchema("Optional handoff queue key."),
+  queue_key: optionalStringSchema("Snake_case alias for queueKey."),
+  labels: optionalStringArraySchema("Optional handoff labels."),
+  queuePosition: optionalNumberSchema("Optional handoff queue position."),
+  queue_position: optionalNumberSchema("Snake_case alias for queuePosition."),
+  dependsOnHandoffUid: optionalStringSchema("Optional preceding handoff dependency."),
+  depends_on_handoff_uid: optionalStringSchema("Snake_case alias for dependsOnHandoffUid."),
   priority: handoffPrioritySchema.describe("Optional priority. Defaults to normal.").optional(),
   urgent: optionalBooleanSchema("Optional urgent flag.")
 });
@@ -260,9 +331,52 @@ const listInboxInputSchema = z.object({
   source_project: optionalStringSchema("Snake_case alias for sourceProject."),
   targetProject: optionalStringSchema("Optional target project filter."),
   target_project: optionalStringSchema("Snake_case alias for targetProject."),
+  queueKey: optionalStringSchema("Optional queue key filter."),
+  queue_key: optionalStringSchema("Snake_case alias for queueKey."),
+  label: optionalStringSchema("Optional label filter."),
   status: handoffStatusSchema.describe("Optional handoff status filter.").optional(),
   includeResolved: optionalBooleanSchema("Include resolved handoffs when listing."),
   include_resolved: optionalBooleanSchema("Snake_case alias for includeResolved.")
+});
+
+const updateHandoffMetadataInputSchema = ownedHandoffInputSchema.extend({
+  queueKey: optionalStringSchema("Optional replacement queue key."),
+  queue_key: optionalStringSchema("Snake_case alias for queueKey."),
+  labels: optionalStringArraySchema("Optional replacement labels."),
+  queuePosition: optionalNumberSchema("Optional replacement queue position."),
+  queue_position: optionalNumberSchema("Snake_case alias for queuePosition."),
+  dependsOnHandoffUid: optionalStringSchema("Optional replacement dependency handoff UID."),
+  depends_on_handoff_uid: optionalStringSchema("Snake_case alias for dependsOnHandoffUid.")
+});
+
+const threadUidInputSchema = z.object({
+  threadUid: optionalStringSchema("Required if thread_uid is omitted. Discussion thread identifier."),
+  thread_uid: optionalStringSchema("Snake_case alias for threadUid.")
+});
+
+const createDiscussionThreadInputSchema = ownedSessionInputSchema.extend({
+  project: requiredStringSchema("Project the discussion belongs to."),
+  handoffUid: optionalStringSchema("Optional linked handoff identifier."),
+  handoff_uid: optionalStringSchema("Snake_case alias for handoffUid."),
+  title: requiredStringSchema("Discussion title.")
+});
+
+const addDiscussionMessageInputSchema = threadUidInputSchema.extend({
+  sessionUid: optionalStringSchema("Required if session_uid is omitted. Authoring session identifier."),
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
+  sessionToken: optionalStringSchema("Required if session_token is omitted. Authoring session owner token."),
+  session_token: optionalStringSchema("Snake_case alias for sessionToken."),
+  messageType: discussionMessageTypeSchema.describe("Message type.").optional(),
+  message_type: discussionMessageTypeSchema.describe("Snake_case alias for messageType.").optional(),
+  body: requiredStringSchema("Message body."),
+  metadata: z.record(z.unknown()).describe("Optional structured message metadata.").optional()
+});
+
+const listDiscussionThreadsInputSchema = z.object({
+  project: optionalStringSchema("Optional project filter."),
+  handoffUid: optionalStringSchema("Optional handoff filter."),
+  handoff_uid: optionalStringSchema("Snake_case alias for handoffUid."),
+  status: discussionThreadStatusSchema.describe("Optional thread status filter.").optional()
 });
 
 const listEventsInputSchema = z.object({
@@ -323,6 +437,24 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: ownedSessionInputSchema
   },
   {
+    name: "vault_collab_list_agent_roles",
+    title: "List Agent Roles",
+    description: "List built-in provider-neutral agent role definitions.",
+    inputSchema: listAgentRolesInputSchema
+  },
+  {
+    name: "vault_collab_upsert_agent_profile",
+    title: "Upsert Agent Profile",
+    description: "Create or update a durable provider-neutral agent profile.",
+    inputSchema: upsertAgentProfileInputSchema
+  },
+  {
+    name: "vault_collab_list_agent_profiles",
+    title: "List Agent Profiles",
+    description: "List durable agent profiles without exposing session tokens.",
+    inputSchema: listAgentProfilesInputSchema
+  },
+  {
     name: "vault_collab_publish_handoff",
     title: "Publish Handoff",
     description: "Publish a local handoff into the target project inbox.",
@@ -351,6 +483,42 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     title: "Get Handoff",
     description: "Read a handoff by ID.",
     inputSchema: handoffUidInputSchema
+  },
+  {
+    name: "vault_collab_get_handoff_detail",
+    title: "Get Handoff Detail",
+    description: "Read a handoff with lifecycle events and non-token related session snapshots.",
+    inputSchema: handoffUidInputSchema
+  },
+  {
+    name: "vault_collab_update_handoff_metadata",
+    title: "Update Handoff Metadata",
+    description: "Update labels and queue metadata as the source or claimed session owner.",
+    inputSchema: updateHandoffMetadataInputSchema
+  },
+  {
+    name: "vault_collab_create_discussion_thread",
+    title: "Create Discussion Thread",
+    description: "Create an owner-token checked discussion thread for a project or handoff.",
+    inputSchema: createDiscussionThreadInputSchema
+  },
+  {
+    name: "vault_collab_add_discussion_message",
+    title: "Add Discussion Message",
+    description: "Append an owner-token checked discussion message.",
+    inputSchema: addDiscussionMessageInputSchema
+  },
+  {
+    name: "vault_collab_list_discussion_threads",
+    title: "List Discussion Threads",
+    description: "List discussion thread summaries.",
+    inputSchema: listDiscussionThreadsInputSchema
+  },
+  {
+    name: "vault_collab_get_discussion_thread",
+    title: "Get Discussion Thread",
+    description: "Read a discussion thread with append-only messages.",
+    inputSchema: threadUidInputSchema
   },
   {
     name: "vault_collab_list_events",
@@ -402,8 +570,11 @@ export function createVaultCollabMcpTools(
   const db = options.db ?? createCollabDatabase(options.dbPath ?? ":memory:");
   const ownsDb = !options.db;
   const events = new EventService(db, options.clock);
+  const agents = new AgentProfileService(db, events, options.clock);
   const sessions = new SessionService(db, events, options.clock);
   const handoffs = new HandoffService(db, events, options.clock);
+  const discussions = new DiscussionService(db, events, options.clock);
+  const handoffDetails = new HandoffDetailService(handoffs, events, sessions, discussions);
   const linkedHandoffs = options.vaultMemoryClient
     ? new VaultLinkedHandoffService(handoffs, options.vaultMemoryClient)
     : null;
@@ -422,6 +593,7 @@ export function createVaultCollabMcpTools(
         clientType: requiredClientType(args, "clientType", "client_type"),
         project: requiredString(args, "project"),
         workspacePath: requiredString(args, "workspacePath", "workspace_path"),
+        agentUid: optionalString(args, "agentUid", "agent_uid") ?? null,
         capabilities: optionalRecord(args, "capabilities") ?? {}
       });
       autoHeartbeats.start(registered.sessionUid, registered.sessionToken);
@@ -454,6 +626,26 @@ export function createVaultCollabMcpTools(
       autoHeartbeats.stop(sessionUid);
       return disconnected;
     },
+    vault_collab_list_agent_roles: () => agents.listRoleDefinitions(),
+    vault_collab_upsert_agent_profile: (args) =>
+      agents.upsertAgentProfile({
+        stableName: requiredString(args, "stableName", "stable_name"),
+        displayName: requiredString(args, "displayName", "display_name"),
+        role: optionalString(args, "role") ?? "implementer",
+        clientType: optionalClientType(args, "clientType", "client_type") ?? null,
+        project: optionalString(args, "project") ?? null,
+        description: optionalString(args, "description") ?? null,
+        capabilities: optionalRecord(args, "capabilities") ?? {},
+        status: optionalAgentProfileStatus(args, "status") ?? "active",
+        createdBySessionUid:
+          optionalString(args, "createdBySessionUid", "created_by_session_uid") ?? null
+      }),
+    vault_collab_list_agent_profiles: (args) =>
+      agents.listAgentProfiles({
+        project: optionalString(args, "project"),
+        role: optionalString(args, "role"),
+        status: optionalAgentProfileStatus(args, "status")
+      }),
     vault_collab_publish_handoff: (args) =>
       handoffs.publishHandoff({
         shortPrompt: requiredString(args, "shortPrompt", "short_prompt"),
@@ -467,6 +659,11 @@ export function createVaultCollabMcpTools(
         suggestedClientType:
           optionalClientType(args, "suggestedClientType", "suggested_client_type") ?? null,
         vaultMemoryUid: optionalString(args, "vaultMemoryUid", "vault_memory_uid") ?? null,
+        queueKey: optionalString(args, "queueKey", "queue_key") ?? undefined,
+        labels: optionalStringArray(args, "labels") ?? undefined,
+        queuePosition: optionalNumber(args, "queuePosition", "queue_position") ?? undefined,
+        dependsOnHandoffUid:
+          optionalString(args, "dependsOnHandoffUid", "depends_on_handoff_uid") ?? null,
         priority: optionalHandoffPriority(args, "priority") ?? "normal",
         urgent: optionalBoolean(args, "urgent") ?? false
       }),
@@ -508,11 +705,58 @@ export function createVaultCollabMcpTools(
       handoffs.listInbox({
         sourceProject: optionalString(args, "sourceProject", "source_project"),
         targetProject: optionalString(args, "targetProject", "target_project"),
+        queueKey: optionalString(args, "queueKey", "queue_key"),
+        label: optionalString(args, "label"),
         status: optionalHandoffStatus(args, "status"),
         includeResolved: optionalBoolean(args, "includeResolved", "include_resolved") ?? false
       }),
     vault_collab_get_handoff: (args) =>
       handoffs.getHandoff(requiredString(args, "handoffUid", "handoff_uid")),
+    vault_collab_get_handoff_detail: (args) =>
+      handoffDetails.getHandoffDetail(requiredString(args, "handoffUid", "handoff_uid")),
+    vault_collab_update_handoff_metadata: (args) =>
+      handoffs.updateHandoffMetadata(
+        requiredString(args, "handoffUid", "handoff_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        {
+          queueKey: optionalString(args, "queueKey", "queue_key"),
+          labels: optionalStringArray(args, "labels"),
+          queuePosition: optionalNumber(args, "queuePosition", "queue_position"),
+          dependsOnHandoffUid: optionalString(
+            args,
+            "dependsOnHandoffUid",
+            "depends_on_handoff_uid"
+          )
+        }
+      ),
+    vault_collab_create_discussion_thread: (args) =>
+      discussions.createThread({
+        project: requiredString(args, "project"),
+        handoffUid: optionalString(args, "handoffUid", "handoff_uid") ?? null,
+        title: requiredString(args, "title"),
+        createdBySessionUid: requiredString(args, "sessionUid", "session_uid"),
+        sessionToken: requiredString(args, "sessionToken", "session_token")
+      }),
+    vault_collab_add_discussion_message: (args) =>
+      discussions.addMessage(
+        requiredString(args, "threadUid", "thread_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        {
+          messageType: requiredDiscussionMessageType(args, "messageType", "message_type"),
+          body: requiredString(args, "body"),
+          metadata: optionalRecord(args, "metadata") ?? {}
+        }
+      ),
+    vault_collab_list_discussion_threads: (args) =>
+      discussions.listThreads({
+        project: optionalString(args, "project"),
+        handoffUid: optionalString(args, "handoffUid", "handoff_uid"),
+        status: optionalDiscussionThreadStatus(args, "status")
+      }),
+    vault_collab_get_discussion_thread: (args) =>
+      discussions.getThread(requiredString(args, "threadUid", "thread_uid")),
     vault_collab_list_events: (args) =>
       events.listEvents({
         handoffUid: optionalString(args, "handoffUid", "handoff_uid"),
@@ -652,6 +896,19 @@ function optionalBoolean(args: Record<string, unknown>, ...keys: string[]): bool
   return value;
 }
 
+function optionalNumber(args: Record<string, unknown>, ...keys: string[]): number | undefined {
+  const value = optionalValue(args, keys);
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Expected number: ${keys[0]}`);
+  }
+
+  return value;
+}
+
 function optionalStringArray(args: Record<string, unknown>, ...keys: string[]): string[] | undefined {
   const value = optionalValue(args, keys);
   if (value === undefined || value === null) {
@@ -759,6 +1016,54 @@ function parseHandoffPriority(value: string): HandoffPriority {
   }
 
   return value as HandoffPriority;
+}
+
+function optionalAgentProfileStatus(
+  args: Record<string, unknown>,
+  ...keys: string[]
+): AgentProfileStatus | undefined {
+  const value = optionalString(args, ...keys);
+  return value ? parseAgentProfileStatus(value) : undefined;
+}
+
+function parseAgentProfileStatus(value: string): AgentProfileStatus {
+  if (!agentProfileStatusValues.includes(value as (typeof agentProfileStatusValues)[number])) {
+    throw new Error(`Invalid agent profile status: ${value}`);
+  }
+
+  return value as AgentProfileStatus;
+}
+
+function optionalDiscussionThreadStatus(
+  args: Record<string, unknown>,
+  ...keys: string[]
+): DiscussionThreadStatus | undefined {
+  const value = optionalString(args, ...keys);
+  return value ? parseDiscussionThreadStatus(value) : undefined;
+}
+
+function parseDiscussionThreadStatus(value: string): DiscussionThreadStatus {
+  if (
+    !discussionThreadStatusValues.includes(value as (typeof discussionThreadStatusValues)[number])
+  ) {
+    throw new Error(`Invalid discussion thread status: ${value}`);
+  }
+
+  return value as DiscussionThreadStatus;
+}
+
+function requiredDiscussionMessageType(
+  args: Record<string, unknown>,
+  ...keys: string[]
+): DiscussionMessageType {
+  const value = requiredString(args, ...keys);
+  if (
+    !discussionMessageTypeValues.includes(value as (typeof discussionMessageTypeValues)[number])
+  ) {
+    throw new Error(`Invalid discussion message type: ${value}`);
+  }
+
+  return value as DiscussionMessageType;
 }
 
 function isRecord(value: unknown): value is JsonRecord {

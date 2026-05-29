@@ -89,6 +89,144 @@ describe("HandoffService", () => {
     expect(inbox[0]).not.toHaveProperty("claimToken");
   });
 
+  it("publishes labeled handoffs with deterministic queue positions", () => {
+    const defaultQueue = handoffs.publishHandoff({
+      shortPrompt: "Default queue",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    const explicitPosition = handoffs.publishHandoff({
+      shortPrompt: "Explicit queue position",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      queueKey: "phase-1",
+      labels: ["qa", "phase-1"],
+      queuePosition: 500
+    });
+    const nextPosition = handoffs.publishHandoff({
+      shortPrompt: "Next queue position",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      queueKey: "phase-1"
+    });
+
+    expect(defaultQueue).toMatchObject({
+      queueKey: "default",
+      labels: [],
+      queuePosition: 1000,
+      dependsOnHandoffUid: null
+    });
+    expect(explicitPosition).toMatchObject({
+      queueKey: "phase-1",
+      labels: ["qa", "phase-1"],
+      queuePosition: 500,
+      dependsOnHandoffUid: null
+    });
+    expect(nextPosition).toMatchObject({
+      queueKey: "phase-1",
+      labels: [],
+      queuePosition: 1500
+    });
+  });
+
+  it("filters and orders inbox handoffs by queue metadata", () => {
+    const laterNormal = handoffs.publishHandoff({
+      shortPrompt: "Later normal",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      queueKey: "phase-1",
+      queuePosition: 2000
+    });
+    const earlierNormal = handoffs.publishHandoff({
+      shortPrompt: "Earlier normal",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      queueKey: "phase-1",
+      queuePosition: 1000
+    });
+    const urgent = handoffs.publishHandoff({
+      shortPrompt: "Urgent",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      queueKey: "phase-1",
+      queuePosition: 3000,
+      urgent: true
+    });
+    handoffs.publishHandoff({
+      shortPrompt: "Other queue",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      queueKey: "phase-2",
+      queuePosition: 100
+    });
+
+    expect(
+      handoffs
+        .listInbox({
+          targetProject: "Vault Collab",
+          queueKey: "phase-1"
+        })
+        .map((handoff) => handoff.handoffUid)
+    ).toEqual([urgent.handoffUid, earlierNormal.handoffUid, laterNormal.handoffUid]);
+  });
+
+  it("updates handoff queue metadata only for the source or claimed session owner", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Metadata update",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      sourceSessionUid: codex.sessionUid
+    });
+
+    expect(() =>
+      handoffs.updateHandoffMetadata(handoff.handoffUid, claude.sessionUid, claude.sessionToken, {
+        labels: ["wrong-owner"]
+      })
+    ).toThrow(/source session or claimed session/i);
+    expect(() =>
+      handoffs.updateHandoffMetadata(handoff.handoffUid, codex.sessionUid, "wrong-token", {
+        labels: ["wrong-token"]
+      })
+    ).toThrow(/invalid session token/i);
+
+    const sourceUpdated = handoffs.updateHandoffMetadata(
+      handoff.handoffUid,
+      codex.sessionUid,
+      codex.sessionToken,
+      {
+        queueKey: "phase-1",
+        labels: ["ready"],
+        queuePosition: 1200,
+        dependsOnHandoffUid: "vc_handoff_previous"
+      }
+    );
+
+    expect(sourceUpdated).toMatchObject({
+      queueKey: "phase-1",
+      labels: ["ready"],
+      queuePosition: 1200,
+      dependsOnHandoffUid: "vc_handoff_previous"
+    });
+
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    const claimUpdated = handoffs.updateHandoffMetadata(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      {
+        labels: ["claimed-review"],
+        queuePosition: 1300
+      }
+    );
+
+    expect(claimUpdated).toMatchObject({
+      queueKey: "phase-1",
+      labels: ["claimed-review"],
+      queuePosition: 1300,
+      dependsOnHandoffUid: "vc_handoff_previous"
+    });
+  });
+
   it("claims a handoff once and records the claiming session", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Claim me",
