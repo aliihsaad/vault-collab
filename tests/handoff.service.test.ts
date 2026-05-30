@@ -103,6 +103,48 @@ describe("HandoffService", () => {
     expect(handoffs.listInbox({ targetProject: "other-project" })).toEqual([]);
   });
 
+  it("defaults related projects to source and target projects when omitted", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Route cross-project context by default.",
+      sourceProject: "the-vault",
+      targetProject: "Vault Collab"
+    });
+
+    expect(handoff.relatedProjects).toEqual(["the-vault", "Vault Collab"]);
+  });
+
+  it("deduplicates default related projects by project key", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Avoid duplicate aliases in related projects.",
+      sourceProject: "Vault Collab",
+      targetProject: "vault_collab"
+    });
+
+    expect(handoff.relatedProjects).toEqual(["Vault Collab"]);
+  });
+
+  it("preserves explicit related projects instead of injecting source and target", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Explicit related projects replace defaults.",
+      sourceProject: "the-vault",
+      targetProject: "Vault Collab",
+      relatedProjects: ["octogent"]
+    });
+
+    expect(handoff.relatedProjects).toEqual(["octogent"]);
+  });
+
+  it("deduplicates explicit related projects by project key", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Explicit related projects should not contain aliases.",
+      sourceProject: "the-vault",
+      targetProject: "Vault Collab",
+      relatedProjects: ["Vault Collab", "vault-collab", "the-vault"]
+    });
+
+    expect(handoff.relatedProjects).toEqual(["Vault Collab", "the-vault"]);
+  });
+
   it("routes inbox handoffs by persisted project keys instead of mutable display labels", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Route by durable key.",

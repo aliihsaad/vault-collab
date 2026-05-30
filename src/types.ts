@@ -348,6 +348,11 @@ export interface PublishHandoffInput {
   shortPrompt: string;
   sourceProject: string;
   targetProject: string;
+  /**
+   * Explicit related project labels for cross-project routing. When omitted or
+   * empty, publishing defaults this to sourceProject + targetProject; when
+   * provided, this list replaces that default.
+   */
   relatedProjects?: string[];
   relatedFiles?: string[];
   sourceSessionUid?: string | null;

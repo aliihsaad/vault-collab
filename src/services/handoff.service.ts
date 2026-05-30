@@ -60,6 +60,26 @@ interface SessionOwnerRow {
 
 const closedInboxStatuses: HandoffStatus[] = ["resolved", "abandoned", "stale"];
 
+function normalizeRelatedProjects(input: PublishHandoffInput): string[] {
+  const relatedProjects =
+    input.relatedProjects && input.relatedProjects.length > 0
+      ? input.relatedProjects
+      : [input.sourceProject, input.targetProject];
+  const seenProjectKeys = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const project of relatedProjects) {
+    const key = projectKey(project);
+    if (seenProjectKeys.has(key)) {
+      continue;
+    }
+    seenProjectKeys.add(key);
+    normalized.push(project);
+  }
+
+  return normalized;
+}
+
 export class HandoffService {
   constructor(
     private readonly db: CollabDatabase,
@@ -75,6 +95,7 @@ export class HandoffService {
     const queueKey = input.queueKey ?? "default";
     const sourceProjectKey = projectKey(input.sourceProject);
     const targetProjectKey = projectKey(input.targetProject);
+    const relatedProjects = normalizeRelatedProjects(input);
     const queuePosition =
       input.queuePosition ?? this.nextQueuePosition(input.targetProject, queueKey);
 
@@ -123,7 +144,7 @@ export class HandoffService {
         sourceProjectKey,
         input.targetProject,
         targetProjectKey,
-        JSON.stringify(input.relatedProjects ?? []),
+        JSON.stringify(relatedProjects),
         JSON.stringify(input.relatedFiles ?? []),
         input.sourceSessionUid ?? null,
         input.suggestedSessionUid ?? null,

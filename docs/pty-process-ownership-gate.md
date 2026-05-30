@@ -25,12 +25,34 @@ The Vault should own:
 - safe input injection into only processes it launched and tracks;
 - stop/kill semantics for only owned processes.
 
+## Coordinator / Worker Model
+
+The user-opened terminal agent is the coordinator. It joins Vault Collab manually
+and does not need forced wake delivery. Claude coordinators join with
+`/vault-collab`; Codex coordinators join by prompting `use vault collab`.
+
+Dashboard-launched agents are workers. They must be launched and owned by The
+Vault when the product promises automatic ping or attention delivery.
+
+Cross-project workers are valid as long as they share the same Vault Collab
+database. Routing should use `relatedProjects`, `sourceProject`,
+`targetProject`, `suggestedSessionUid`, discussions, and pings rather than
+assuming a single current repository.
+
 ## Why
 
 Vault Collab currently has no process runtime. It is a local-first coordination
 package and MCP server. Adding native PTY dependencies and process-control
 semantics there would blur ownership and make it too easy to imply control over
 manual external sessions.
+
+The Octogent local repo shows the pattern to borrow: a runtime owns live
+`node-pty` sessions, queues channel messages by target terminal id, writes
+pending messages into the PTY with `writeInput`, and retries delivery when idle
+or stop hooks prove the target is safe to prompt. The durable database event is
+not the wake mechanism. Automatic delivery is only real when an attached host
+process owns the target terminal and can acknowledge the attention cursor after
+a successful write.
 
 The Vault already has an Electron main process using `child_process.spawn` for
 managed local tasks and a preload bridge for renderer actions. Its Vault Collab
@@ -200,4 +222,3 @@ The next implementation should happen in `the-vault`, not this package:
 3. Add dashboard UI for roster rename/close and delivery-attempt history.
 4. Add a separate plan for Electron PTY runtime using `node-pty`; do not install
    the native dependency until the dashboard action wiring is verified.
-

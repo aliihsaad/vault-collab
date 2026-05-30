@@ -80,9 +80,14 @@ describe("vault-collab CLI", () => {
     expect(loopText).toMatch(/vault_collab_get_session_attention|attention/);
     expect(loopText).toMatch(/watch-attention/);
     expect(loopText).toMatch(/vault_collab_get_handoff_detail|handoff/);
+    expect(loopText).toMatch(/coordinator/i);
+    expect(loopText).toMatch(/managed/i);
+    expect(loopText).toMatch(/worker/i);
     expect(guide.attentionItems).toHaveProperty("suggested_handoff");
     expect(safetyText).toMatch(/Do not auto-claim/i);
     expect(safetyText).toMatch(/Do not use vault_collab_list_inbox alone/i);
+    expect(safetyText).toMatch(/manual coordinator/i);
+    expect(safetyText).toMatch(/worker wakeable/i);
     expect(JSON.stringify(guide)).not.toContain("sessionToken");
   });
 

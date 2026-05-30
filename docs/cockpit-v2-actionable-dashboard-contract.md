@@ -108,6 +108,22 @@ successfully surfaced by a receiver, or failed with a reason. Filter by
 Handoff statuses `resolved`, `abandoned`, and `stale` are closed handoff states,
 not session states. Render them in history surfaces, not the live session roster.
 
+## Coordinator And Managed Worker UX
+
+- Show manually joined sessions as coordinator/manual unless delivery metadata
+  proves they are an owned managed process.
+- Show dashboard-launched sessions as managed workers when
+  `capabilities.launchedBy` is present and
+  `delivery.mode === "managed_process"`.
+- Ping copy for coordinator/manual sessions must say stored/manual.
+- Ping copy for managed workers may say delivered only after a delivery attempt
+  succeeds and acknowledgement advances.
+- Cross-project related sessions and handoffs must remain visible when connected
+  through `relatedProjects` or `suggestedSessionUid`.
+- Compare project relationships by `projectKey`, not raw display labels, so
+  labels such as `Vault Collab`, `vault-collab`, and `vault_collab` route
+  together.
+
 ## Handoff Actions
 
 Use the owner-token lifecycle mutations for handoff buttons. The dashboard should
