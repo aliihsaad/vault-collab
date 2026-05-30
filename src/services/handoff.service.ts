@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { projectKey } from "../project-key.js";
 import { progressHandoffStatuses } from "../types.js";
 import type { EventService } from "./event.service.js";
 import type {
@@ -20,7 +21,9 @@ interface HandoffRow {
   vault_memory_uid: string | null;
   short_prompt: string;
   source_project: string;
+  source_project_key: string;
   target_project: string;
+  target_project_key: string;
   related_projects_json: string;
   related_files_json: string;
   source_session_uid: string | null;
@@ -66,6 +69,8 @@ export class HandoffService {
     const priority = input.priority ?? "normal";
     const urgent = input.urgent ?? priority === "urgent";
     const queueKey = input.queueKey ?? "default";
+    const sourceProjectKey = projectKey(input.sourceProject);
+    const targetProjectKey = projectKey(input.targetProject);
     const queuePosition =
       input.queuePosition ?? this.nextQueuePosition(input.targetProject, queueKey);
 
@@ -77,7 +82,9 @@ export class HandoffService {
           vault_memory_uid,
           short_prompt,
           source_project,
+          source_project_key,
           target_project,
+          target_project_key,
           related_projects_json,
           related_files_json,
           source_session_uid,
@@ -101,7 +108,7 @@ export class HandoffService {
           resolved_at,
           stale_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -109,7 +116,9 @@ export class HandoffService {
         input.vaultMemoryUid ?? null,
         input.shortPrompt,
         input.sourceProject,
+        sourceProjectKey,
         input.targetProject,
+        targetProjectKey,
         JSON.stringify(input.relatedProjects ?? []),
         JSON.stringify(input.relatedFiles ?? []),
         input.sourceSessionUid ?? null,
@@ -154,13 +163,13 @@ export class HandoffService {
     const params: string[] = [];
 
     if (filter.sourceProject) {
-      clauses.push("source_project = ?");
-      params.push(filter.sourceProject);
+      clauses.push("source_project_key = ?");
+      params.push(projectKey(filter.sourceProject));
     }
 
     if (filter.targetProject) {
-      clauses.push("target_project = ?");
-      params.push(filter.targetProject);
+      clauses.push("target_project_key = ?");
+      params.push(projectKey(filter.targetProject));
     }
 
     if (filter.queueKey) {
@@ -829,17 +838,25 @@ export class HandoffService {
   }
 
   private nextQueuePosition(targetProject: string, queueKey: string): number {
-    const row = this.db
+    const rows = this.db
       .prepare(
         `
-        SELECT MAX(queue_position) AS max_position
+        SELECT queue_position
         FROM handoffs
-        WHERE target_project = ?
-          AND queue_key = ?
+        WHERE queue_key = ?
+          AND target_project_key = ?
       `
       )
-      .get(targetProject, queueKey) as { max_position: number | null } | undefined;
+      .all(queueKey, projectKey(targetProject)) as Array<{ queue_position: number | null }>;
 
-    return (row?.max_position ?? 0) + 1000;
+    const maxPosition = rows.reduce((max, row) => {
+      if (row.queue_position === null) {
+        return max;
+      }
+
+      return Math.max(max, row.queue_position);
+    }, 0);
+
+    return maxPosition + 1000;
   }
 }

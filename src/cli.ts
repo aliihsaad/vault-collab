@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
+import { getAgentOperatingGuide } from "./agent-guide.js";
 import { createCollabDatabase } from "./database/connection.js";
+import { withAttentionNextAction } from "./next-actions.js";
 import { AgentProfileService } from "./services/agent-profile.service.js";
 import { AttentionService } from "./services/attention.service.js";
 import { DiscussionService } from "./services/discussion.service.js";
 import { EventService } from "./services/event.service.js";
 import { HandoffDetailService } from "./services/handoff-detail.service.js";
 import { HandoffService } from "./services/handoff.service.js";
+import { LaunchRequestService } from "./services/launch-request.service.js";
 import { SessionService } from "./services/session.service.js";
-import { progressHandoffStatuses } from "./types.js";
+import { launchRequestStatuses, progressHandoffStatuses } from "./types.js";
 import type {
   AgentProfileStatus,
   ClientType,
@@ -17,6 +20,9 @@ import type {
   HandoffPriority,
   HandoffStatus,
   JsonRecord,
+  LaunchRequestStatus,
+  SessionAttentionFeed,
+  SessionAttentionItem,
   SessionStatus
 } from "./types.js";
 
@@ -36,22 +42,54 @@ interface Services {
   sessions: SessionService;
   handoffs: HandoffService;
   handoffDetails: HandoffDetailService;
+  launchRequests: LaunchRequestService;
   discussions: DiscussionService;
   attention: AttentionService;
   events: EventService;
   close: () => void;
 }
 
+interface RecommendedAttentionAction {
+  kind: string;
+  reason: string;
+  eventId?: number;
+  handoffUid?: string;
+  launchRequestUid?: string;
+  command?: string;
+}
+
+interface AttentionWatchResult {
+  timedOut: boolean;
+  elapsedMs: number;
+  intervalMs: number;
+  timeoutMs: number;
+  attention: SessionAttentionFeed;
+  recommendedActions: RecommendedAttentionAction[];
+}
+
 const commands = new Set([
+  "guide",
   "check",
   "register",
   "heartbeat",
   "sessions",
   "attention",
+  "watch-attention",
   "state",
   "ping-session",
   "session-permission-request",
   "disconnect",
+  "launch-create",
+  "launches",
+  "launch",
+  "launch-detail",
+  "launch-actions",
+  "launch-approve",
+  "launch-reject",
+  "launch-cancel",
+  "launch-mark-launching",
+  "launch-mark-running",
+  "launch-fail",
   "roles",
   "agent-upsert",
   "agents",
@@ -78,8 +116,23 @@ export async function runCli(argv: string[] = process.argv.slice(2)): Promise<Cl
 
   try {
     const parsed = parseArgs(argv);
+    if (parsed.command === "guide") {
+      return {
+        exitCode: 0,
+        stdout: `${JSON.stringify(
+          getAgentOperatingGuide({
+            clientType: optionalClientType(parsed, "client-type") ?? null,
+            project: optionalOption(parsed, "project") ?? null
+          }),
+          null,
+          2
+        )}\n`,
+        stderr: ""
+      };
+    }
+
     services = createServices(requiredOption(parsed, "db"));
-    const output = execute(parsed, services);
+    const output = await execute(parsed, services);
 
     return {
       exitCode: 0,
@@ -97,7 +150,7 @@ export async function runCli(argv: string[] = process.argv.slice(2)): Promise<Cl
   }
 }
 
-function execute(parsed: ParsedCommand, services: Services): unknown {
+async function execute(parsed: ParsedCommand, services: Services): Promise<unknown> {
   switch (parsed.command) {
     case "check":
       return {
@@ -110,14 +163,16 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
       };
 
     case "register":
-      return services.sessions.registerSession({
-        displayName: requiredOption(parsed, "display-name"),
-        clientType: optionClientType(parsed, "client-type"),
-        project: requiredOption(parsed, "project"),
-        workspacePath: requiredOption(parsed, "workspace-path"),
-        agentUid: optionalOption(parsed, "agent-uid") ?? null,
-        capabilities: parseCapabilities(parsed.options.get("capability") ?? [])
-      });
+      return withAttentionNextAction(
+        services.sessions.registerSession({
+          displayName: requiredOption(parsed, "display-name"),
+          clientType: optionClientType(parsed, "client-type"),
+          project: requiredOption(parsed, "project"),
+          workspacePath: requiredOption(parsed, "workspace-path"),
+          agentUid: optionalOption(parsed, "agent-uid") ?? null,
+          capabilities: parseCapabilities(parsed.options.get("capability") ?? [])
+        })
+      );
 
     case "heartbeat":
       return services.sessions.heartbeatSession(
@@ -137,6 +192,9 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         sinceEventId: optionalNumberOption(parsed, "since-event-id"),
         includeCurrentHandoffs: !parsed.options.has("no-current-handoffs")
       });
+
+    case "watch-attention":
+      return watchAttention(parsed, services);
 
     case "state":
       return services.sessions.updateSessionState(
@@ -168,6 +226,98 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
       return services.sessions.disconnectSession(
         requiredOption(parsed, "session-uid"),
         requiredOption(parsed, "session-token")
+      );
+
+    case "launch-create":
+      return services.launchRequests.createLaunchRequest({
+        requestedBySessionUid: requiredOption(parsed, "session-uid"),
+        sessionToken: requiredOption(parsed, "session-token"),
+        provider: optionClientType(parsed, "provider"),
+        model: requiredOption(parsed, "model"),
+        effortLevel: optionalOption(parsed, "effort-level") ?? null,
+        project: requiredOption(parsed, "project"),
+        workspacePath: requiredOption(parsed, "workspace-path"),
+        role: optionalOption(parsed, "role") ?? null,
+        initialInstructions: requiredOption(parsed, "initial-instructions"),
+        permissionMode: requiredOption(parsed, "permission-mode"),
+        commandPreview: optionalOption(parsed, "command-preview") ?? null,
+        requestedCapabilities: parsed.options.get("requested-capability") ?? [],
+        approvalPolicyVersion: optionalOption(parsed, "approval-policy-version") ?? null,
+        metadata: parseCapabilities(parsed.options.get("metadata") ?? [])
+      });
+
+    case "launches":
+      return services.launchRequests.listLaunchRequests({
+        project: optionalOption(parsed, "project"),
+        provider: optionalClientType(parsed, "provider"),
+        status: optionalLaunchRequestStatus(parsed, "status"),
+        requestedBySessionUid: optionalOption(parsed, "requested-by-session-uid")
+      });
+
+    case "launch":
+      return services.launchRequests.getLaunchRequest(
+        requiredOption(parsed, "launch-request-uid")
+      );
+
+    case "launch-detail":
+      return services.launchRequests.getLaunchRequestDetail(
+        requiredOption(parsed, "launch-request-uid")
+      );
+
+    case "launch-actions":
+      return services.launchRequests.getLaunchRequestActions(
+        requiredOption(parsed, "launch-request-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token")
+      );
+
+    case "launch-approve":
+      return services.launchRequests.approveLaunchRequest(
+        requiredOption(parsed, "launch-request-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        optionalOption(parsed, "detail") ?? null
+      );
+
+    case "launch-reject":
+      return services.launchRequests.rejectLaunchRequest(
+        requiredOption(parsed, "launch-request-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        requiredOption(parsed, "reason")
+      );
+
+    case "launch-cancel":
+      return services.launchRequests.cancelLaunchRequest(
+        requiredOption(parsed, "launch-request-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        requiredOption(parsed, "reason")
+      );
+
+    case "launch-mark-launching":
+      return services.launchRequests.markLaunchRequestLaunching(
+        requiredOption(parsed, "launch-request-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        optionalOption(parsed, "detail") ?? null
+      );
+
+    case "launch-mark-running":
+      return services.launchRequests.markLaunchRequestRunning(
+        requiredOption(parsed, "launch-request-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        requiredOption(parsed, "launched-session-uid"),
+        optionalOption(parsed, "detail") ?? null
+      );
+
+    case "launch-fail":
+      return services.launchRequests.failLaunchRequest(
+        requiredOption(parsed, "launch-request-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        requiredOption(parsed, "reason")
       );
 
     case "roles":
@@ -348,19 +498,177 @@ function createServices(dbPath: string): Services {
   const agents = new AgentProfileService(db, events);
   const sessions = new SessionService(db, events);
   const handoffs = new HandoffService(db, events);
+  const launchRequests = new LaunchRequestService(db, events);
   const discussions = new DiscussionService(db, events);
-  const attention = new AttentionService(db, sessions, handoffs, discussions, events);
+  const attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);
 
   return {
     agents,
     sessions,
     handoffs,
     handoffDetails: new HandoffDetailService(handoffs, events, sessions, discussions),
+    launchRequests,
     discussions,
     attention,
     events,
     close: () => db.close()
   };
+}
+
+async function watchAttention(
+  parsed: ParsedCommand,
+  services: Services
+): Promise<AttentionWatchResult> {
+  const sessionUid = requiredOption(parsed, "session-uid");
+  const dbPath = requiredOption(parsed, "db");
+  const intervalMs = optionalNumberOption(parsed, "interval-ms") ?? 2000;
+  const timeoutMs = optionalNumberOption(parsed, "timeout-ms") ?? 30_000;
+  const sinceEventId = optionalNumberOption(parsed, "since-event-id");
+  const includeCurrentHandoffs = !parsed.options.has("no-current-handoffs");
+
+  if (intervalMs <= 0) {
+    throw new Error("--interval-ms must be greater than 0");
+  }
+
+  if (timeoutMs < 0) {
+    throw new Error("--timeout-ms must be 0 or greater");
+  }
+
+  const startedAt = Date.now();
+  let attention = services.attention.getSessionAttention(sessionUid, {
+    sinceEventId,
+    includeCurrentHandoffs
+  });
+
+  while (attention.items.length === 0 && Date.now() - startedAt < timeoutMs) {
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    await sleep(Math.min(intervalMs, Math.max(0, remainingMs)));
+    attention = services.attention.getSessionAttention(sessionUid, {
+      sinceEventId,
+      includeCurrentHandoffs
+    });
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  return {
+    timedOut: attention.items.length === 0,
+    elapsedMs,
+    intervalMs,
+    timeoutMs,
+    attention,
+    recommendedActions: recommendedAttentionActions(attention, dbPath)
+  };
+}
+
+function recommendedAttentionActions(
+  attention: SessionAttentionFeed,
+  dbPath: string
+): RecommendedAttentionAction[] {
+  const actions = new Map<string, RecommendedAttentionAction>();
+
+  for (const item of attention.items) {
+    const action = recommendedAttentionAction(attention, item, dbPath);
+    if (action) {
+      actions.set(
+        `${action.kind}:${action.handoffUid ?? action.launchRequestUid ?? action.eventId ?? ""}`,
+        action
+      );
+    }
+  }
+
+  return Array.from(actions.values());
+}
+
+function recommendedAttentionAction(
+  attention: SessionAttentionFeed,
+  item: SessionAttentionItem,
+  dbPath: string
+): RecommendedAttentionAction | null {
+  if (item.kind === "suggested_handoff" || item.kind === "available_handoff") {
+    const handoffUid = item.handoff?.handoffUid;
+    if (!handoffUid) {
+      return null;
+    }
+
+    if (attention.session.status !== "idle") {
+      return {
+        kind: "defer_claim_until_idle",
+        handoffUid,
+        reason: `Session is ${attention.session.status}; do not interrupt or auto-claim.`
+      };
+    }
+
+    return {
+      kind: "claim_handoff",
+      handoffUid,
+      command: `vault-collab claim --db ${dbPath} --handoff-uid ${handoffUid} --session-uid ${attention.session.sessionUid} --session-token <owner-token>`,
+      reason: "Session is idle and the handoff is available; inspect detail before claiming."
+    };
+  }
+
+  if (item.kind === "claimed_handoff" && item.handoff) {
+    return {
+      kind: "inspect_claimed_handoff",
+      handoffUid: item.handoff.handoffUid,
+      command: `vault-collab handoff --db ${dbPath} --handoff-uid ${item.handoff.handoffUid}`,
+      reason: "Session already owns this handoff; inspect detail and continue, update, resolve, or release."
+    };
+  }
+
+  if (item.kind === "handoff_permission" && item.handoff) {
+    return {
+      kind: "await_user_permission",
+      eventId: item.event?.eventId,
+      handoffUid: item.handoff.handoffUid,
+      command: `vault-collab handoff --db ${dbPath} --handoff-uid ${item.handoff.handoffUid}`,
+      reason: "Handoff is awaiting user permission; do not proceed until the user decides."
+    };
+  }
+
+  if (item.kind === "session_permission") {
+    return {
+      kind: "await_user_permission",
+      eventId: item.event?.eventId,
+      reason: "Session is awaiting user permission; do not proceed until the user decides."
+    };
+  }
+
+  if (item.kind === "session_ping") {
+    return {
+      kind: "inspect_ping",
+      eventId: item.event?.eventId,
+      reason: "Soft ping noticed by watcher; inspect the attention payload before deciding what to do."
+    };
+  }
+
+  if (item.kind === "discussion_message") {
+    const threadUid = item.event?.payload.threadUid;
+    return {
+      kind: "read_discussion",
+      eventId: item.event?.eventId,
+      handoffUid: item.handoff?.handoffUid,
+      command:
+        typeof threadUid === "string"
+          ? `vault-collab discussion --db ${dbPath} --thread-uid ${threadUid}`
+          : undefined,
+      reason: "A relevant handoff discussion has a new message; read the thread before continuing."
+    };
+  }
+
+  if (item.kind === "launch_request" && item.launchRequest) {
+    return {
+      kind: "inspect_launch_request",
+      launchRequestUid: item.launchRequest.launchRequestUid,
+      command: `vault-collab launch-detail --db ${dbPath} --launch-request-uid ${item.launchRequest.launchRequestUid}`,
+      reason: "A project launch request needs operator attention; inspect approval state before acting."
+    };
+  }
+
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function parseArgs(argv: string[]): ParsedCommand {
@@ -564,6 +872,22 @@ function parseHandoffPriority(value: string): HandoffPriority {
   }
 
   return value as HandoffPriority;
+}
+
+function optionalLaunchRequestStatus(
+  parsed: ParsedCommand,
+  name: string
+): LaunchRequestStatus | undefined {
+  const value = optionalOption(parsed, name);
+  return value ? parseLaunchRequestStatus(value) : undefined;
+}
+
+function parseLaunchRequestStatus(value: string): LaunchRequestStatus {
+  if (!launchRequestStatuses.includes(value as (typeof launchRequestStatuses)[number])) {
+    throw new Error(`Invalid launch request status: ${value}`);
+  }
+
+  return value as LaunchRequestStatus;
 }
 
 function optionalAgentProfileStatus(

@@ -186,6 +186,41 @@ describe("DiscussionService", () => {
       messageCount: 3,
       lastMessageAt: "2026-05-29T13:03:00.000Z"
     });
+    expect(discussions.listThreads({ project: "vault-collab" })).toHaveLength(1);
+  });
+
+  it("accepts handoff-linked thread creation when the project label differs", () => {
+    const thread = discussions.createThread({
+      project: "vault-collab",
+      handoffUid: handoff.handoffUid,
+      title: "Alias project discussion",
+      createdBySessionUid: codex.sessionUid,
+      sessionToken: codex.sessionToken
+    });
+
+    expect(thread).toMatchObject({
+      handoffUid: handoff.handoffUid,
+      project: "vault-collab"
+    });
+    expect(discussions.listThreads({ project: "Vault Collab" })).toHaveLength(1);
+  });
+
+  it("routes discussion threads by persisted project key instead of mutable display label", () => {
+    const thread = discussions.createThread({
+      project: "Vault Collab",
+      title: "Project-key routed thread",
+      createdBySessionUid: codex.sessionUid,
+      sessionToken: codex.sessionToken
+    });
+
+    db.prepare("UPDATE discussion_threads SET project = ? WHERE thread_uid = ?").run(
+      "Renamed Display Label",
+      thread.threadUid
+    );
+
+    expect(discussions.listThreads({ project: "vault-collab" })[0]?.threadUid).toBe(
+      thread.threadUid
+    );
   });
 
   it("keeps append order deterministic when messages share a timestamp", () => {

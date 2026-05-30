@@ -2,10 +2,12 @@ import type { CollabDatabase } from "../database/connection.js";
 import type { DiscussionService } from "./discussion.service.js";
 import type { EventService } from "./event.service.js";
 import type { HandoffService } from "./handoff.service.js";
+import type { LaunchRequestService } from "./launch-request.service.js";
 import type { SessionService } from "./session.service.js";
 import type {
   EventRecord,
   HandoffRecord,
+  LaunchRequestRecord,
   SessionAttentionFeed,
   SessionAttentionItem,
   SessionAttentionOptions
@@ -19,7 +21,8 @@ export class AttentionService {
     private readonly sessions: SessionService,
     private readonly handoffs: HandoffService,
     private readonly discussions: DiscussionService,
-    private readonly events: EventService
+    private readonly events: EventService,
+    private readonly launchRequests?: LaunchRequestService
   ) {
     void this.db;
     void this.discussions;
@@ -40,25 +43,38 @@ export class AttentionService {
       (latest, event) => Math.max(latest, event.eventId),
       sinceEventId
     );
-    const currentHandoffs = this.handoffs
+    const openHandoffs = this.handoffs
+      .listInbox({
+        includeResolved: false
+      })
+      .filter((handoff) => !closedHandoffStatuses.has(handoff.status));
+    const projectHandoffs = this.handoffs
       .listInbox({
         targetProject: session.project,
         includeResolved: false
       })
       .filter((handoff) => !closedHandoffStatuses.has(handoff.status));
+    const projectHandoffUids = new Set(
+      projectHandoffs.map((handoff) => handoff.handoffUid)
+    );
+    const currentHandoffs = this.uniqueHandoffs(
+      projectHandoffs,
+      openHandoffs.filter((handoff) => this.isSessionLinkedHandoff(handoff, sessionUid))
+    );
     const relevantHandoffUids = new Set(
-      currentHandoffs
-        .filter(
-          (handoff) =>
-            handoff.targetProject === session.project ||
-            handoff.sourceSessionUid === sessionUid ||
-            handoff.suggestedSessionUid === sessionUid ||
-            handoff.claimedBySessionUid === sessionUid
-        )
-        .map((handoff) => handoff.handoffUid)
+      currentHandoffs.map((handoff) => handoff.handoffUid)
     );
     const handoffsByUid = new Map(
       currentHandoffs.map((handoff) => [handoff.handoffUid, handoff] as const)
+    );
+    const projectLaunchRequests = this.launchRequests
+      ? this.launchRequests.listLaunchRequests({ project: session.project })
+      : [];
+    const launchRequestsByUid = new Map(
+      projectLaunchRequests.map((launchRequest) => [
+        launchRequest.launchRequestUid,
+        launchRequest
+      ] as const)
     );
     const items: SessionAttentionItem[] = [];
 
@@ -71,10 +87,17 @@ export class AttentionService {
         event,
         sessionUid,
         relevantHandoffUids,
-        handoffsByUid
+        handoffsByUid,
+        launchRequestsByUid
       );
       if (eventItem) {
         items.push(eventItem);
+      }
+    }
+
+    for (const launchRequest of projectLaunchRequests) {
+      if (["requested", "approved", "launching"].includes(launchRequest.status)) {
+        items.push(this.launchRequestItem("launch_request", null, launchRequest));
       }
     }
 
@@ -84,13 +107,18 @@ export class AttentionService {
           items.push(this.handoffItem("claimed_handoff", handoff));
         } else if (handoff.suggestedSessionUid === sessionUid) {
           items.push(this.handoffItem("suggested_handoff", handoff));
-        } else if (handoff.status === "available") {
+        } else if (
+          handoff.status === "available" &&
+          projectHandoffUids.has(handoff.handoffUid)
+        ) {
           items.push(this.handoffItem("available_handoff", handoff));
         }
       }
     }
 
-    items.sort((left, right) => {
+    const dedupedItems = this.dedupeLaunchRequestItems(items);
+
+    dedupedItems.sort((left, right) => {
       const byCreatedAt = left.createdAt.localeCompare(right.createdAt);
       if (byCreatedAt !== 0) {
         return byCreatedAt;
@@ -103,7 +131,7 @@ export class AttentionService {
       session,
       sinceEventId,
       latestEventId,
-      items
+      items: dedupedItems
     };
   }
 
@@ -111,7 +139,8 @@ export class AttentionService {
     event: EventRecord,
     sessionUid: string,
     relevantHandoffUids: Set<string>,
-    handoffsByUid: Map<string, HandoffRecord>
+    handoffsByUid: Map<string, HandoffRecord>,
+    launchRequestsByUid: Map<string, LaunchRequestRecord>
   ): SessionAttentionItem | null {
     if (event.eventType === "session.pinged" && event.sessionUid === sessionUid) {
       return this.eventItem("session_ping", event, null);
@@ -127,6 +156,16 @@ export class AttentionService {
         event,
         event.handoffUid ? handoffsByUid.get(event.handoffUid) ?? null : null
       );
+    }
+
+    if (event.eventType.startsWith("launch_request.")) {
+      const launchRequestUid = event.payload.launchRequestUid;
+      if (typeof launchRequestUid === "string") {
+        const launchRequest = launchRequestsByUid.get(launchRequestUid);
+        if (launchRequest) {
+          return this.launchRequestItem("launch_request", event, launchRequest);
+        }
+      }
     }
 
     if (
@@ -154,6 +193,7 @@ export class AttentionService {
       kind,
       event,
       handoff,
+      launchRequest: null,
       createdAt: event.createdAt
     };
   }
@@ -166,14 +206,83 @@ export class AttentionService {
       kind,
       event: null,
       handoff,
+      launchRequest: null,
       createdAt: handoff.updatedAt
     };
+  }
+
+  private launchRequestItem(
+    kind: SessionAttentionItem["kind"],
+    event: EventRecord | null,
+    launchRequest: LaunchRequestRecord
+  ): SessionAttentionItem {
+    return {
+      kind,
+      event,
+      handoff: null,
+      launchRequest,
+      createdAt: event?.createdAt ?? launchRequest.updatedAt
+    };
+  }
+
+  private isSessionLinkedHandoff(handoff: HandoffRecord, sessionUid: string): boolean {
+    return (
+      handoff.sourceSessionUid === sessionUid ||
+      handoff.suggestedSessionUid === sessionUid ||
+      handoff.claimedBySessionUid === sessionUid
+    );
+  }
+
+  private uniqueHandoffs(...groups: HandoffRecord[][]): HandoffRecord[] {
+    const unique = new Map<string, HandoffRecord>();
+    for (const group of groups) {
+      for (const handoff of group) {
+        unique.set(handoff.handoffUid, handoff);
+      }
+    }
+
+    return Array.from(unique.values());
+  }
+
+  private dedupeLaunchRequestItems(
+    items: SessionAttentionItem[]
+  ): SessionAttentionItem[] {
+    const nonLaunchItems: SessionAttentionItem[] = [];
+    const launchItemsByUid = new Map<string, SessionAttentionItem>();
+
+    for (const item of items) {
+      if (item.kind !== "launch_request" || !item.launchRequest) {
+        nonLaunchItems.push(item);
+        continue;
+      }
+
+      const uid = item.launchRequest.launchRequestUid;
+      const existing = launchItemsByUid.get(uid);
+      if (!existing || this.isNewerLaunchRequestItem(existing, item)) {
+        launchItemsByUid.set(uid, item);
+      }
+    }
+
+    return [...nonLaunchItems, ...launchItemsByUid.values()];
+  }
+
+  private isNewerLaunchRequestItem(
+    existing: SessionAttentionItem,
+    candidate: SessionAttentionItem
+  ): boolean {
+    const byCreatedAt = candidate.createdAt.localeCompare(existing.createdAt);
+    if (byCreatedAt !== 0) {
+      return byCreatedAt > 0;
+    }
+
+    return Boolean(candidate.event && !existing.event);
   }
 
   private kindOrder(kind: SessionAttentionItem["kind"]): number {
     return [
       "session_permission",
       "handoff_permission",
+      "launch_request",
       "session_ping",
       "discussion_message",
       "claimed_handoff",

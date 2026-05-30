@@ -131,6 +131,7 @@ export type AttentionItemKind =
   | "session_ping"
   | "session_permission"
   | "handoff_permission"
+  | "launch_request"
   | "discussion_message"
   | "suggested_handoff"
   | "claimed_handoff"
@@ -145,6 +146,7 @@ export interface SessionAttentionItem {
   kind: AttentionItemKind;
   event: EventRecord | null;
   handoff: HandoffRecord | null;
+  launchRequest: LaunchRequestRecord | null;
   createdAt: string;
 }
 
@@ -153,6 +155,109 @@ export interface SessionAttentionFeed {
   sinceEventId: number;
   latestEventId: number;
   items: SessionAttentionItem[];
+}
+
+export type LaunchRequestStatus =
+  | "requested"
+  | "approved"
+  | "rejected"
+  | "cancelled"
+  | "launching"
+  | "running"
+  | "failed";
+
+export const launchRequestStatuses = [
+  "requested",
+  "approved",
+  "rejected",
+  "cancelled",
+  "launching",
+  "running",
+  "failed"
+] as const satisfies readonly LaunchRequestStatus[];
+
+export interface CreateLaunchRequestInput {
+  requestedBySessionUid: string;
+  sessionToken: string;
+  provider: ClientType;
+  model: string;
+  effortLevel?: string | null;
+  project: string;
+  workspacePath: string;
+  role?: string | null;
+  initialInstructions: string;
+  permissionMode: string;
+  commandPreview?: string | null;
+  requestedCapabilities?: string[];
+  approvalPolicyVersion?: string | null;
+  metadata?: JsonRecord;
+}
+
+export interface LaunchRequestRecord {
+  launchRequestUid: string;
+  provider: ClientType;
+  model: string;
+  effortLevel: string | null;
+  project: string;
+  workspacePath: string;
+  role: string | null;
+  initialInstructions: string;
+  permissionMode: string;
+  commandPreview: string | null;
+  requestedCapabilities: string[];
+  approvalPolicyVersion: string | null;
+  approvalSnapshot: JsonRecord | null;
+  status: LaunchRequestStatus;
+  statusDetail: string | null;
+  requestedBySessionUid: string;
+  approvedBySessionUid: string | null;
+  rejectedBySessionUid: string | null;
+  brokerSessionUid: string | null;
+  launchedSessionUid: string | null;
+  metadata: JsonRecord;
+  createdAt: string;
+  updatedAt: string;
+  approvedAt: string | null;
+  rejectedAt: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface LaunchRequestFilters {
+  project?: string;
+  provider?: ClientType;
+  status?: LaunchRequestStatus;
+  requestedBySessionUid?: string;
+}
+
+export interface LaunchRequestDetail {
+  launchRequest: LaunchRequestRecord;
+  events: EventRecord[];
+}
+
+export type LaunchRequestActionKind =
+  | "approve"
+  | "reject"
+  | "cancel"
+  | "mark_launching"
+  | "mark_running"
+  | "fail";
+
+export interface LaunchRequestActionAffordance {
+  kind: LaunchRequestActionKind;
+  enabled: boolean;
+  reason: string;
+  toolName: string;
+  requiredCapability: string | null;
+  requiresOwnerToken: true;
+  requiresReason: boolean;
+  requiresLaunchedSessionUid: boolean;
+}
+
+export interface LaunchRequestActionSet {
+  launchRequest: LaunchRequestRecord;
+  actingSessionUid: string;
+  actions: LaunchRequestActionAffordance[];
 }
 
 export type HandoffStatus =

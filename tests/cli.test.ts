@@ -16,6 +16,10 @@ function parseJson<T>(result: CliResult): T {
   return JSON.parse(result.stdout) as T;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 describe("vault-collab CLI", () => {
   let dbPath: string;
   let cwd: string;
@@ -52,8 +56,42 @@ describe("vault-collab CLI", () => {
     expect(sessions).toEqual([]);
   });
 
+  it("prints a provider-neutral agent guide without requiring a database", async () => {
+    const guide = parseJson<{
+      title: string;
+      clientType: string | null;
+      project: string | null;
+      projectKey: string | null;
+      loop: string[];
+      attentionItems: Record<string, string>;
+      safetyRules: string[];
+    }>(await runCli(["guide", "--client-type", "gemini", "--project", "Vault Collab"]));
+
+    const loopText = guide.loop.join("\n");
+    const safetyText = guide.safetyRules.join("\n");
+
+    expect(guide).toMatchObject({
+      title: "Vault Collab provider-neutral agent operating guide",
+      clientType: "gemini",
+      project: "Vault Collab",
+      projectKey: "vault-collab"
+    });
+    expect(loopText).toMatch(/vault_collab_register_session|register/);
+    expect(loopText).toMatch(/vault_collab_get_session_attention|attention/);
+    expect(loopText).toMatch(/watch-attention/);
+    expect(loopText).toMatch(/vault_collab_get_handoff_detail|handoff/);
+    expect(guide.attentionItems).toHaveProperty("suggested_handoff");
+    expect(safetyText).toMatch(/Do not auto-claim/i);
+    expect(safetyText).toMatch(/Do not use vault_collab_list_inbox alone/i);
+    expect(JSON.stringify(guide)).not.toContain("sessionToken");
+  });
+
   it("runs the session and handoff smoke workflow through JSON commands", async () => {
-    const codex = parseJson<{ sessionUid: string; sessionToken: string }>(
+    const codex = parseJson<{
+      sessionUid: string;
+      sessionToken: string;
+      nextActions: Array<{ tool: string; args: { sessionUid: string; includeCurrentHandoffs: boolean } }>;
+    }>(
       await runCli([
         "register",
         "--db",
@@ -70,6 +108,16 @@ describe("vault-collab CLI", () => {
         "handoffs=true"
       ])
     );
+    expect(codex.nextActions).toEqual([
+      {
+        tool: "vault_collab_get_session_attention",
+        args: {
+          sessionUid: codex.sessionUid,
+          includeCurrentHandoffs: true
+        },
+        reason: "Discover pings, permission requests, suggested handoffs, claimed work, and available project handoffs for this active session."
+      }
+    ]);
     const claude = parseJson<{ sessionUid: string; sessionToken: string }>(
       await runCli([
         "register",
@@ -342,7 +390,9 @@ describe("vault-collab CLI", () => {
         "--project",
         "Vault Collab",
         "--workspace-path",
-        cwd
+        cwd,
+        "--capability",
+        "launchRequests=true"
       ])
     );
     const implementer = parseJson<{ sessionUid: string; sessionToken: string }>(
@@ -357,7 +407,9 @@ describe("vault-collab CLI", () => {
         "--project",
         "Vault Collab",
         "--workspace-path",
-        cwd
+        cwd,
+        "--capability",
+        "launchRequests=true"
       ])
     );
     const handoff = parseJson<{ handoffUid: string }>(
@@ -461,7 +513,9 @@ describe("vault-collab CLI", () => {
         "--project",
         "Vault Collab",
         "--workspace-path",
-        cwd
+        cwd,
+        "--capability",
+        "launchRequests=true"
       ])
     );
     const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
@@ -607,6 +661,490 @@ describe("vault-collab CLI", () => {
     );
     expect(JSON.stringify(permissionEvents)).not.toContain(worker.sessionToken);
     expect(JSON.stringify(attention)).not.toContain(worker.sessionToken);
+  });
+
+  it("watch-attention notices a targeted idle handoff and returns a manual claim instruction", async () => {
+    const coordinator = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Coordinator",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Idle Worker",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+
+    const watchPromise = runCli([
+      "watch-attention",
+      "--db",
+      dbPath,
+      "--session-uid",
+      worker.sessionUid,
+      "--interval-ms",
+      "20",
+      "--timeout-ms",
+      "1000"
+    ]);
+    await delay(40);
+    const handoff = parseJson<{ handoffUid: string }>(
+      await runCli([
+        "publish",
+        "--db",
+        dbPath,
+        "--short-prompt",
+        "Targeted idle work",
+        "--source-project",
+        "Vault Collab",
+        "--target-project",
+        "Vault Collab",
+        "--source-session-uid",
+        coordinator.sessionUid,
+        "--suggested-session-uid",
+        worker.sessionUid
+      ])
+    );
+
+    const watched = parseJson<{
+      timedOut: boolean;
+      attention: {
+        session: { sessionUid: string; status: string };
+        items: Array<{ kind: string; handoff: { handoffUid: string } | null }>;
+      };
+      recommendedActions: Array<{
+        kind: string;
+        handoffUid?: string;
+        command?: string;
+        reason: string;
+      }>;
+    }>(await watchPromise);
+
+    expect(watched.timedOut).toBe(false);
+    expect(watched.attention.session).toMatchObject({
+      sessionUid: worker.sessionUid,
+      status: "idle"
+    });
+    expect(
+      watched.attention.items.find(
+        (item) => item.kind === "suggested_handoff" && item.handoff?.handoffUid === handoff.handoffUid
+      )
+    ).toBeDefined();
+    expect(watched.recommendedActions).toContainEqual(
+      expect.objectContaining({
+        kind: "claim_handoff",
+        handoffUid: handoff.handoffUid,
+        command: expect.stringContaining(`claim --db ${dbPath}`)
+      })
+    );
+    expect(JSON.stringify(watched)).not.toContain(worker.sessionToken);
+  });
+
+  it("watch-attention does not auto-claim or interrupt a busy session", async () => {
+    const coordinator = parseJson<{ sessionUid: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Coordinator",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Busy Worker",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    await runCli([
+      "state",
+      "--db",
+      dbPath,
+      "--session-uid",
+      worker.sessionUid,
+      "--session-token",
+      worker.sessionToken,
+      "--status",
+      "working",
+      "--detail",
+      "Already handling work"
+    ]);
+    const handoff = parseJson<{ handoffUid: string }>(
+      await runCli([
+        "publish",
+        "--db",
+        dbPath,
+        "--short-prompt",
+        "Do not interrupt",
+        "--source-project",
+        "Vault Collab",
+        "--target-project",
+        "Vault Collab",
+        "--source-session-uid",
+        coordinator.sessionUid,
+        "--suggested-session-uid",
+        worker.sessionUid
+      ])
+    );
+
+    const watched = parseJson<{
+      timedOut: boolean;
+      attention: { session: { status: string } };
+      recommendedActions: Array<{ kind: string; handoffUid?: string }>;
+    }>(
+      await runCli([
+        "watch-attention",
+        "--db",
+        dbPath,
+        "--session-uid",
+        worker.sessionUid,
+        "--interval-ms",
+        "20",
+        "--timeout-ms",
+        "200"
+      ])
+    );
+    const refreshedHandoff = parseJson<{
+      handoff: { status: string; claimedBySessionUid: string | null };
+    }>(await runCli(["handoff", "--db", dbPath, "--handoff-uid", handoff.handoffUid]));
+    const refreshedWorker = parseJson<Array<{ sessionUid: string; status: string }>>(
+      await runCli(["sessions", "--db", dbPath, "--project", "Vault Collab"])
+    ).find((session) => session.sessionUid === worker.sessionUid);
+
+    expect(watched.timedOut).toBe(false);
+    expect(watched.attention.session.status).toBe("working");
+    expect(watched.recommendedActions).toContainEqual(
+      expect.objectContaining({
+        kind: "defer_claim_until_idle",
+        handoffUid: handoff.handoffUid
+      })
+    );
+    expect(refreshedHandoff.handoff).toMatchObject({
+      status: "available",
+      claimedBySessionUid: null
+    });
+    expect(refreshedWorker).toMatchObject({
+      status: "working"
+    });
+  });
+
+  it("runs the launch-request broker lifecycle through flat JSON commands", async () => {
+    const requester = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Operator",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--capability",
+        "launchRequests=true"
+      ])
+    );
+    const approver = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Approver",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--capability",
+        "launchApproval=true"
+      ])
+    );
+    const broker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Local Broker",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--capability",
+        "launchBroker=true"
+      ])
+    );
+
+    const request = parseJson<{ launchRequestUid: string; status: string }>(
+      await runCli([
+        "launch-create",
+        "--db",
+        dbPath,
+        "--session-uid",
+        requester.sessionUid,
+        "--session-token",
+        requester.sessionToken,
+        "--provider",
+        "codex",
+        "--model",
+        "gpt-5-codex",
+        "--effort-level",
+        "high",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--role",
+        "implementer",
+        "--initial-instructions",
+        "Implement the broker foundation.",
+        "--permission-mode",
+        "workspace-write",
+        "--command-preview",
+        "codex --model gpt-5-codex",
+        "--requested-capability",
+        "filesystem-write",
+        "--approval-policy-version",
+        "cockpit-v2.0",
+        "--metadata",
+        "source=cli-test"
+      ])
+    );
+    expect(request.status).toBe("requested");
+
+    const launches = parseJson<Array<{ launchRequestUid: string }>>(
+      await runCli([
+        "launches",
+        "--db",
+        dbPath,
+        "--project",
+        "vault-collab",
+        "--status",
+        "requested"
+      ])
+    );
+    expect(launches.map((launch) => launch.launchRequestUid)).toEqual([
+      request.launchRequestUid
+    ]);
+
+    const requesterActions = parseJson<{
+      actions: Array<{ kind: string; enabled: boolean; toolName: string }>;
+    }>(
+      await runCli([
+        "launch-actions",
+        "--db",
+        dbPath,
+        "--launch-request-uid",
+        request.launchRequestUid,
+        "--session-uid",
+        requester.sessionUid,
+        "--session-token",
+        requester.sessionToken
+      ])
+    );
+    const approverActions = parseJson<{
+      actions: Array<{ kind: string; enabled: boolean; toolName: string }>;
+    }>(
+      await runCli([
+        "launch-actions",
+        "--db",
+        dbPath,
+        "--launch-request-uid",
+        request.launchRequestUid,
+        "--session-uid",
+        approver.sessionUid,
+        "--session-token",
+        approver.sessionToken
+      ])
+    );
+
+    expect(requesterActions.actions).toContainEqual(
+      expect.objectContaining({
+        kind: "cancel",
+        enabled: true,
+        toolName: "vault_collab_cancel_launch_request"
+      })
+    );
+    expect(requesterActions.actions).toContainEqual(
+      expect.objectContaining({
+        kind: "approve",
+        enabled: false
+      })
+    );
+    expect(approverActions.actions).toContainEqual(
+      expect.objectContaining({
+        kind: "approve",
+        enabled: true,
+        toolName: "vault_collab_approve_launch_request"
+      })
+    );
+    expect(JSON.stringify(approverActions)).not.toContain(approver.sessionToken);
+
+    const denied = await runCli([
+      "launch-approve",
+      "--db",
+      dbPath,
+      "--launch-request-uid",
+      request.launchRequestUid,
+      "--session-uid",
+      requester.sessionUid,
+      "--session-token",
+      requester.sessionToken,
+      "--detail",
+      "Requester should not self-approve."
+    ]);
+    expect(denied.exitCode).toBe(1);
+    expect(denied.stderr).toMatch(/launch approval capability/i);
+    expect(denied.stderr).not.toContain(requester.sessionToken);
+
+    const approved = parseJson<{ status: string; approvedBySessionUid: string }>(
+      await runCli([
+        "launch-approve",
+        "--db",
+        dbPath,
+        "--launch-request-uid",
+        request.launchRequestUid,
+        "--session-uid",
+        approver.sessionUid,
+        "--session-token",
+        approver.sessionToken,
+        "--detail",
+        "Approved for broker pickup."
+      ])
+    );
+    expect(approved).toMatchObject({
+      status: "approved",
+      approvedBySessionUid: approver.sessionUid
+    });
+
+    await runCli([
+      "launch-mark-launching",
+      "--db",
+      dbPath,
+      "--launch-request-uid",
+      request.launchRequestUid,
+      "--session-uid",
+      broker.sessionUid,
+      "--session-token",
+      broker.sessionToken,
+      "--detail",
+      "Broker accepted request."
+    ]);
+    const launched = parseJson<{ sessionUid: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Launched Codex",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--capability",
+        `launchedBy=${request.launchRequestUid}`
+      ])
+    );
+    const running = parseJson<{ status: string; launchedSessionUid: string }>(
+      await runCli([
+        "launch-mark-running",
+        "--db",
+        dbPath,
+        "--launch-request-uid",
+        request.launchRequestUid,
+        "--session-uid",
+        broker.sessionUid,
+        "--session-token",
+        broker.sessionToken,
+        "--launched-session-uid",
+        launched.sessionUid,
+        "--detail",
+        "Launched session registered."
+      ])
+    );
+    const got = parseJson<{ status: string; sessionToken?: string }>(
+      await runCli([
+        "launch",
+        "--db",
+        dbPath,
+        "--launch-request-uid",
+        request.launchRequestUid
+      ])
+    );
+    const detail = parseJson<{
+      launchRequest: { launchRequestUid: string; status: string };
+      events: Array<{ eventType: string }>;
+    }>(
+      await runCli([
+        "launch-detail",
+        "--db",
+        dbPath,
+        "--launch-request-uid",
+        request.launchRequestUid
+      ])
+    );
+
+    expect(running).toMatchObject({
+      status: "running",
+      launchedSessionUid: launched.sessionUid
+    });
+    expect(got.status).toBe("running");
+    expect(detail.launchRequest).toMatchObject({
+      launchRequestUid: request.launchRequestUid,
+      status: "running"
+    });
+    expect(detail.events.map((event) => event.eventType)).toEqual([
+      "launch_request.requested",
+      "launch_request.approved",
+      "launch_request.launching",
+      "launch_request.running"
+    ]);
+    expect(JSON.stringify(got)).not.toContain(approver.sessionToken);
+    expect(JSON.stringify(got)).not.toContain(broker.sessionToken);
+    expect(JSON.stringify(detail)).not.toContain(approver.sessionToken);
+    expect(JSON.stringify(detail)).not.toContain(broker.sessionToken);
   });
 
   it("runs the agent, queue, and discussion workflow through flat JSON commands", async () => {

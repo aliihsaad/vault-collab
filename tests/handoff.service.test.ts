@@ -89,6 +89,41 @@ describe("HandoffService", () => {
     expect(inbox[0]).not.toHaveProperty("claimToken");
   });
 
+  it("matches target and source projects by deterministic project key", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Project aliases should still route.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+
+    expect(handoffs.listInbox({ targetProject: "vault-collab" })).toHaveLength(1);
+    expect(handoffs.listInbox({ sourceProject: "vault_collab" })[0]?.handoffUid).toBe(
+      handoff.handoffUid
+    );
+    expect(handoffs.listInbox({ targetProject: "other-project" })).toEqual([]);
+  });
+
+  it("routes inbox handoffs by persisted project keys instead of mutable display labels", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Route by durable key.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+
+    db.prepare("UPDATE handoffs SET source_project = ?, target_project = ? WHERE handoff_uid = ?").run(
+      "Renamed Source Label",
+      "Renamed Target Label",
+      handoff.handoffUid
+    );
+
+    expect(handoffs.listInbox({ targetProject: "vault-collab" })[0]?.handoffUid).toBe(
+      handoff.handoffUid
+    );
+    expect(handoffs.listInbox({ sourceProject: "vault_collab" })[0]?.handoffUid).toBe(
+      handoff.handoffUid
+    );
+  });
+
   it("publishes labeled handoffs with deterministic queue positions", () => {
     const defaultQueue = handoffs.publishHandoff({
       shortPrompt: "Default queue",
@@ -109,6 +144,12 @@ describe("HandoffService", () => {
       targetProject: "Vault Collab",
       queueKey: "phase-1"
     });
+    const aliasPosition = handoffs.publishHandoff({
+      shortPrompt: "Alias queue position",
+      sourceProject: "Vault Collab",
+      targetProject: "vault-collab",
+      queueKey: "phase-1"
+    });
 
     expect(defaultQueue).toMatchObject({
       queueKey: "default",
@@ -126,6 +167,11 @@ describe("HandoffService", () => {
       queueKey: "phase-1",
       labels: [],
       queuePosition: 1500
+    });
+    expect(aliasPosition).toMatchObject({
+      queueKey: "phase-1",
+      labels: [],
+      queuePosition: 2500
     });
   });
 

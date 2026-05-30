@@ -335,7 +335,27 @@ describe("SessionService", () => {
     });
 
     expect(service.listSessions({ project: "Vault Collab" })).toHaveLength(1);
+    expect(service.listSessions({ project: "vault-collab" })).toHaveLength(1);
     expect(service.listSessions({ clientType: "other" })).toHaveLength(1);
     expect(service.listSessions({ project: "Missing" })).toEqual([]);
+  });
+
+  it("routes sessions by persisted project key instead of mutable display label", () => {
+    const registered = service.registerSession({
+      displayName: "Codex",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+
+    db.prepare("UPDATE sessions SET project = ? WHERE session_uid = ?").run(
+      "Renamed Display Label",
+      registered.sessionUid
+    );
+
+    expect(service.listSessions({ project: "vault-collab" })[0]?.sessionUid).toBe(
+      registered.sessionUid
+    );
   });
 });

@@ -28,6 +28,9 @@ Current scope:
   - optional session binding to agent profiles,
   - labeled ordered handoff queues,
   - append-only discussion threads and messages.
+- Deterministic project-key matching across project labels. `Vault Collab`,
+  `vault-collab`, and `vault_collab` route to the same project key while record
+  display labels remain intact.
 - Phase 4 usage notes are in `docs/phase-4-vault-link.md`.
 
 Deferred:
@@ -64,6 +67,12 @@ read-only, token-safe, and cursor-friendly via event IDs. Active agents or a
 future watcher can poll it to notice pings, permission waits, discussion
 messages, claimed handoffs, suggested handoffs, and available project work
 without claiming or executing anything.
+
+For AI clients, prefer repeated one-shot attention checks after registration and
+at idle boundaries instead of long-running wait loops. Project inbox listing is
+only a queue snapshot; the attention feed is the active-session notice surface.
+Registration responses include a `nextActions` hint that points agents directly
+to `vault_collab_get_session_attention` with `includeCurrentHandoffs=true`.
 
 Recovery resolution is a provenance-preserving lifecycle path for operational
 dead ends caused by context compaction or client restart. It emits

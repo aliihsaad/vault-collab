@@ -51,6 +51,7 @@ describe("Vault Collab MCP tools", () => {
 
   it("exposes the neutral tool names without destructive or role-based commands", () => {
     expect(vaultCollabToolNames).toEqual([
+      "vault_collab_get_agent_guide",
       "vault_collab_register_session",
       "vault_collab_heartbeat_session",
       "vault_collab_update_session_state",
@@ -59,6 +60,17 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_list_sessions",
       "vault_collab_get_session_attention",
       "vault_collab_disconnect_session",
+      "vault_collab_create_launch_request",
+      "vault_collab_list_launch_requests",
+      "vault_collab_get_launch_request",
+      "vault_collab_get_launch_request_detail",
+      "vault_collab_get_launch_request_actions",
+      "vault_collab_approve_launch_request",
+      "vault_collab_reject_launch_request",
+      "vault_collab_cancel_launch_request",
+      "vault_collab_mark_launch_request_launching",
+      "vault_collab_mark_launch_request_running",
+      "vault_collab_fail_launch_request",
       "vault_collab_list_agent_roles",
       "vault_collab_upsert_agent_profile",
       "vault_collab_list_agent_profiles",
@@ -93,6 +105,265 @@ describe("Vault Collab MCP tools", () => {
     ).toBe(false);
   });
 
+  it("hides Vault-linked publish when no Vault memory client is configured", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    expect(tools.definitions.map((tool) => tool.name)).not.toContain(
+      "vault_collab_publish_handoff_with_vault_memory"
+    );
+
+    const result = await tools.callTool("vault_collab_publish_handoff_with_vault_memory", {
+      shortPrompt: "Needs memory-backed publish.",
+      fullBrief: "Save this to Vault before publishing the handoff.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({ type: "text" });
+    const message = result.content[0]?.type === "text" ? result.content[0].text : "";
+    expect(message).toMatch(/not available/i);
+    expect(message).toMatch(/vault_save_memory/i);
+    expect(message).toMatch(/vault_collab_publish_handoff/i);
+    expect(message).toMatch(/vaultMemoryUid/i);
+  });
+
+  it("returns a provider-neutral agent operating guide through MCP", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const guide = structured<{
+      title: string;
+      clientType: string | null;
+      project: string | null;
+      projectKey: string | null;
+      loop: string[];
+      attentionItems: Record<string, string>;
+      safetyRules: string[];
+    }>(
+      await tools.callTool("vault_collab_get_agent_guide", {
+        clientType: "claude-code",
+        project: "Vault Collab"
+      })
+    );
+
+    const loopText = guide.loop.join("\n");
+    const safetyText = guide.safetyRules.join("\n");
+
+    expect(guide).toMatchObject({
+      title: "Vault Collab provider-neutral agent operating guide",
+      clientType: "claude-code",
+      project: "Vault Collab",
+      projectKey: "vault-collab"
+    });
+    expect(loopText).toMatch(/vault_collab_register_session/);
+    expect(loopText).toMatch(/vault_collab_get_session_attention/);
+    expect(loopText).toMatch(/watch-attention/);
+    expect(loopText).toMatch(/vault_collab_get_handoff_detail/);
+    expect(loopText).toMatch(/vault_collab_claim_handoff/);
+    expect(guide.attentionItems).toHaveProperty("session_ping");
+    expect(guide.attentionItems).toHaveProperty("launch_request");
+    expect(safetyText).toMatch(/Do not auto-claim/i);
+    expect(safetyText).toMatch(/Do not use vault_collab_list_inbox alone/i);
+    expect(JSON.stringify(guide)).not.toContain("sessionToken");
+  });
+
+  it("runs the launch-request broker lifecycle through MCP without spawning processes", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const requester = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Operator",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        capabilities: {
+          launchRequests: true
+        }
+      })
+    );
+    const approver = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Approver",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        capabilities: {
+          launchApproval: true
+        }
+      })
+    );
+    const broker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Local Broker",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        capabilities: {
+          launchBroker: true
+        }
+      })
+    );
+
+    const request = structured<{
+      launchRequestUid: string;
+      status: string;
+      provider: string;
+      initialInstructions: string;
+      sessionToken?: string;
+    }>(
+      await tools.callTool("vault_collab_create_launch_request", {
+        sessionUid: requester.sessionUid,
+        sessionToken: requester.sessionToken,
+        provider: "codex",
+        model: "gpt-5-codex",
+        effortLevel: "high",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        role: "implementer",
+        initialInstructions: "Implement the broker foundation.",
+        permissionMode: "workspace-write",
+        commandPreview: "codex --model gpt-5-codex",
+        requestedCapabilities: ["filesystem-write"],
+        approvalPolicyVersion: "cockpit-v2.0",
+        metadata: {
+          source: "mcp-test"
+        }
+      })
+    );
+
+    expect(request).toMatchObject({
+      status: "requested",
+      provider: "codex",
+      initialInstructions: "Implement the broker foundation."
+    });
+    expect(request).not.toHaveProperty("sessionToken");
+
+    const list = structured<Array<{ launchRequestUid: string }>>(
+      await tools.callTool("vault_collab_list_launch_requests", {
+        project: "vault-collab",
+        status: "requested"
+      })
+    );
+    expect(list.map((item) => item.launchRequestUid)).toEqual([request.launchRequestUid]);
+
+    const approverActions = structured<{
+      launchRequest: { launchRequestUid: string };
+      actions: Array<{ kind: string; enabled: boolean; toolName: string }>;
+    }>(
+      await tools.callTool("vault_collab_get_launch_request_actions", {
+        launchRequestUid: request.launchRequestUid,
+        sessionUid: approver.sessionUid,
+        sessionToken: approver.sessionToken
+      })
+    );
+    expect(approverActions.launchRequest.launchRequestUid).toBe(request.launchRequestUid);
+    expect(approverActions.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "approve",
+          enabled: true,
+          toolName: "vault_collab_approve_launch_request"
+        })
+      ])
+    );
+    expect(JSON.stringify(approverActions)).not.toContain(approver.sessionToken);
+
+    const denied = await tools.callTool("vault_collab_approve_launch_request", {
+      launchRequestUid: request.launchRequestUid,
+      sessionUid: requester.sessionUid,
+      sessionToken: requester.sessionToken,
+      detail: "Requester should not self-approve."
+    });
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied)).not.toContain(requester.sessionToken);
+
+    const approved = structured<{ status: string; approvedBySessionUid: string }>(
+      await tools.callTool("vault_collab_approve_launch_request", {
+        launchRequestUid: request.launchRequestUid,
+        sessionUid: approver.sessionUid,
+        sessionToken: approver.sessionToken,
+        detail: "Approved for broker pickup."
+      })
+    );
+    expect(approved).toMatchObject({
+      status: "approved",
+      approvedBySessionUid: approver.sessionUid
+    });
+
+    const launching = structured<{ status: string; brokerSessionUid: string }>(
+      await tools.callTool("vault_collab_mark_launch_request_launching", {
+        launchRequestUid: request.launchRequestUid,
+        sessionUid: broker.sessionUid,
+        sessionToken: broker.sessionToken,
+        detail: "Broker accepted request."
+      })
+    );
+    expect(launching).toMatchObject({
+      status: "launching",
+      brokerSessionUid: broker.sessionUid
+    });
+
+    const launched = structured<{ sessionUid: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Launched Codex",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        capabilities: {
+          launchedBy: request.launchRequestUid
+        }
+      })
+    );
+    const running = structured<{ status: string; launchedSessionUid: string }>(
+      await tools.callTool("vault_collab_mark_launch_request_running", {
+        launchRequestUid: request.launchRequestUid,
+        sessionUid: broker.sessionUid,
+        sessionToken: broker.sessionToken,
+        launchedSessionUid: launched.sessionUid,
+        detail: "Launched session registered."
+      })
+    );
+    expect(running).toMatchObject({
+      status: "running",
+      launchedSessionUid: launched.sessionUid
+    });
+
+    const got = structured<{ launchRequestUid: string; status: string }>(
+      await tools.callTool("vault_collab_get_launch_request", {
+        launchRequestUid: request.launchRequestUid
+      })
+    );
+    expect(got).toMatchObject({
+      launchRequestUid: request.launchRequestUid,
+      status: "running"
+    });
+    const detail = structured<{
+      launchRequest: { launchRequestUid: string; status: string };
+      events: Array<{ eventType: string }>;
+    }>(
+      await tools.callTool("vault_collab_get_launch_request_detail", {
+        launchRequestUid: request.launchRequestUid
+      })
+    );
+    expect(detail.launchRequest).toMatchObject({
+      launchRequestUid: request.launchRequestUid,
+      status: "running"
+    });
+    expect(detail.events.map((event) => event.eventType)).toEqual([
+      "launch_request.requested",
+      "launch_request.approved",
+      "launch_request.launching",
+      "launch_request.running"
+    ]);
+    expect(JSON.stringify(got)).not.toContain(approver.sessionToken);
+    expect(JSON.stringify(got)).not.toContain(broker.sessionToken);
+    expect(JSON.stringify(detail)).not.toContain(approver.sessionToken);
+    expect(JSON.stringify(detail)).not.toContain(broker.sessionToken);
+  });
+
   it("documents register session inputs including capabilities and aliases", () => {
     const registerKeys = schemaKeys("vault_collab_register_session");
 
@@ -110,6 +381,18 @@ describe("Vault Collab MCP tools", () => {
         "capabilities"
       ])
     );
+  });
+
+  it("documents attention as the required active-session discovery surface", () => {
+    const register = vaultCollabToolDefinitions.find(
+      (tool) => tool.name === "vault_collab_register_session"
+    );
+    const inbox = vaultCollabToolDefinitions.find((tool) => tool.name === "vault_collab_list_inbox");
+
+    expect(register?.description).toMatch(/vault_collab_get_session_attention/);
+    expect(register?.description).toMatch(/after registering/i);
+    expect(inbox?.description).toMatch(/project queue snapshot/i);
+    expect(inbox?.description).toMatch(/vault_collab_get_session_attention/);
   });
 
   it("advertises only progress statuses for update_handoff", () => {
@@ -140,7 +423,11 @@ describe("Vault Collab MCP tools", () => {
     });
     closeTools = tools.close;
 
-    const session = structured<{ sessionUid: string; sessionToken: string }>(
+    const session = structured<{
+      sessionUid: string;
+      sessionToken: string;
+      nextActions: Array<{ tool: string; args: { sessionUid: string; includeCurrentHandoffs: boolean } }>;
+    }>(
       await tools.callTool("vault_collab_register_session", {
         displayName: "Codex",
         clientType: "codex",
@@ -148,6 +435,16 @@ describe("Vault Collab MCP tools", () => {
         workspacePath: cwd
       })
     );
+    expect(session.nextActions).toEqual([
+      {
+        tool: "vault_collab_get_session_attention",
+        args: {
+          sessionUid: session.sessionUid,
+          includeCurrentHandoffs: true
+        },
+        reason: "Discover pings, permission requests, suggested handoffs, claimed work, and available project handoffs for this active session."
+      }
+    ]);
 
     now = new Date("2026-05-28T10:00:01.000Z");
     await vi.advanceTimersByTimeAsync(1000);

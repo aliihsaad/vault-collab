@@ -48,8 +48,10 @@ Register the source session:
 node dist\cli.js register --db $db --display-name "Codex" --client-type codex --project "Vault Collab" --workspace-path $workspace --capability handoffs=true
 ```
 
-The response includes a `sessionUid` and `sessionToken`. Keep the token private;
-listing commands do not expose it.
+The response includes a `sessionUid`, `sessionToken`, and `nextActions`. Keep
+the token private; listing commands do not expose it. The first `nextActions`
+entry points to `vault_collab_get_session_attention` for the newly registered
+session.
 
 If the full brief already exists in Vault memory, publish the handoff with that
 memory UID:
@@ -101,6 +103,7 @@ node dist\mcp\server.js
 
 Relevant Phase 4 tools:
 
+- `vault_collab_get_agent_guide`
 - `vault_collab_publish_handoff`
 - `vault_collab_publish_handoff_with_vault_memory`
 - `vault_collab_link_vault_memory`
@@ -108,6 +111,13 @@ Relevant Phase 4 tools:
 - `vault_collab_get_handoff_detail`
 - `vault_collab_recover_handoff`
 - `vault_collab_list_events`
+
+Use `vault_collab_get_agent_guide` first when a client needs the
+provider-neutral operating loop. The guide is token-safe and explains startup,
+attention checks, handoff inspection, claiming, discussion, permission, and
+completion behavior without assuming a specific agent provider. It also returns
+`projectKey`, the deterministic routing key used to match labels such as
+`Vault Collab`, `vault-collab`, and `vault_collab`.
 
 Use `vault_collab_publish_handoff` with `vaultMemoryUid` when a Vault memory item
 already exists:
@@ -215,7 +225,13 @@ active agent or watcher can poll:
 
 The feed aggregates relevant pings, permission requests, discussion messages,
 claimed handoffs, suggested handoffs, and available project handoffs. It is a
-read-only notice surface and does not claim or execute work.
+read-only notice surface and does not claim or execute work. Active agents
+should call it immediately after registration and again at idle boundaries before
+concluding that no handoffs or pings need attention. `vault_collab_list_inbox`
+is a project queue snapshot, not a replacement for this session-specific feed.
+Project filters and attention matching use deterministic project keys, so a
+session registered as `vault-collab` can still see a handoff targeted at
+`Vault Collab`.
 
 Use `vault_collab_request_session_permission` when an active agent session needs
 human approval not tied to a handoff:
@@ -270,9 +286,12 @@ const tools = createVaultCollabMcpTools({
 });
 ```
 
-Without an injected client, this tool returns an explicit configuration error.
-That is intentional: the standalone server should not silently reach into an
-unconfigured memory backend.
+Without an injected client, standalone MCP servers do not advertise this tool.
+If a stale client still calls it by name, it returns an explicit fallback
+instruction instead of implying that linked publishing is available: save the
+full brief with Vault MCP `vault_save_memory`, then call
+`vault_collab_publish_handoff` with the returned `vaultMemoryUid`. The
+standalone server should not silently reach into an unconfigured memory backend.
 
 ## V2 Coordination Metadata
 

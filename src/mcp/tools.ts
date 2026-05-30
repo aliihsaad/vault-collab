@@ -1,15 +1,18 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { getAgentOperatingGuide } from "../agent-guide.js";
 import { createCollabDatabase, type CollabDatabase } from "../database/connection.js";
+import { withAttentionNextAction } from "../next-actions.js";
 import { AgentProfileService } from "../services/agent-profile.service.js";
 import { AttentionService } from "../services/attention.service.js";
 import { DiscussionService } from "../services/discussion.service.js";
 import { EventService } from "../services/event.service.js";
 import { HandoffDetailService } from "../services/handoff-detail.service.js";
 import { HandoffService } from "../services/handoff.service.js";
+import { LaunchRequestService } from "../services/launch-request.service.js";
 import { SessionService } from "../services/session.service.js";
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../services/vault-link.service.js";
-import { progressHandoffStatuses } from "../types.js";
+import { launchRequestStatuses, progressHandoffStatuses } from "../types.js";
 import type {
   AgentProfileStatus,
   ClientType,
@@ -18,10 +21,12 @@ import type {
   HandoffPriority,
   HandoffStatus,
   JsonRecord,
+  LaunchRequestStatus,
   SessionStatus
 } from "../types.js";
 
 export const vaultCollabToolNames = [
+  "vault_collab_get_agent_guide",
   "vault_collab_register_session",
   "vault_collab_heartbeat_session",
   "vault_collab_update_session_state",
@@ -30,6 +35,17 @@ export const vaultCollabToolNames = [
   "vault_collab_list_sessions",
   "vault_collab_get_session_attention",
   "vault_collab_disconnect_session",
+  "vault_collab_create_launch_request",
+  "vault_collab_list_launch_requests",
+  "vault_collab_get_launch_request",
+  "vault_collab_get_launch_request_detail",
+  "vault_collab_get_launch_request_actions",
+  "vault_collab_approve_launch_request",
+  "vault_collab_reject_launch_request",
+  "vault_collab_cancel_launch_request",
+  "vault_collab_mark_launch_request_launching",
+  "vault_collab_mark_launch_request_running",
+  "vault_collab_fail_launch_request",
   "vault_collab_list_agent_roles",
   "vault_collab_upsert_agent_profile",
   "vault_collab_list_agent_profiles",
@@ -57,6 +73,9 @@ export const vaultCollabToolNames = [
 ] as const;
 
 export type VaultCollabToolName = (typeof vaultCollabToolNames)[number];
+
+const vaultMemoryLinkedPublishToolName: VaultCollabToolName =
+  "vault_collab_publish_handoff_with_vault_memory";
 
 export interface VaultCollabToolResult extends CallToolResult {
   structuredContent: {
@@ -164,6 +183,7 @@ const handoffPriorityValues = [
   "high",
   "urgent"
 ] as const satisfies readonly HandoffPriority[];
+const launchRequestStatusValues = launchRequestStatuses;
 const agentProfileStatusValues = ["active", "archived"] as const satisfies readonly AgentProfileStatus[];
 const discussionThreadStatusValues = [
   "open",
@@ -183,9 +203,16 @@ const sessionStatusSchema = z.enum(sessionStatusValues);
 const handoffStatusSchema = z.enum(handoffStatusValues);
 const progressHandoffStatusSchema = z.enum(progressHandoffStatuses);
 const handoffPrioritySchema = z.enum(handoffPriorityValues);
+const launchRequestStatusSchema = z.enum(launchRequestStatusValues);
 const agentProfileStatusSchema = z.enum(agentProfileStatusValues);
 const discussionThreadStatusSchema = z.enum(discussionThreadStatusValues);
 const discussionMessageTypeSchema = z.enum(discussionMessageTypeValues);
+
+const agentGuideInputSchema = z.object({
+  clientType: clientTypeSchema.describe("Optional provider/client identifier for tailoring examples.").optional(),
+  client_type: clientTypeSchema.describe("Snake_case alias for clientType.").optional(),
+  project: optionalStringSchema("Optional project name for guide context.")
+});
 
 function requiredStringSchema(description: string): z.ZodString {
   return z.string().min(1).describe(description);
@@ -265,6 +292,74 @@ const getSessionAttentionInputSchema = z.object({
   since_event_id: optionalNumberSchema("Snake_case alias for sinceEventId."),
   includeCurrentHandoffs: optionalBooleanSchema("Include current claimed/suggested/available handoffs."),
   include_current_handoffs: optionalBooleanSchema("Snake_case alias for includeCurrentHandoffs.")
+});
+
+const createLaunchRequestInputSchema = ownedSessionInputSchema.extend({
+  provider: clientTypeSchema.describe("Provider/client type to launch."),
+  model: requiredStringSchema("Model identifier to request."),
+  effortLevel: optionalStringSchema("Optional effort level."),
+  effort_level: optionalStringSchema("Snake_case alias for effortLevel."),
+  project: requiredStringSchema("Project the launched agent should join."),
+  workspacePath: optionalStringSchema("Required if workspace_path is omitted. Workspace path to open."),
+  workspace_path: optionalStringSchema("Snake_case alias for workspacePath."),
+  role: optionalStringSchema("Optional requested agent role."),
+  initialInstructions: optionalStringSchema("Required if initial_instructions is omitted. Initial instructions."),
+  initial_instructions: optionalStringSchema("Snake_case alias for initialInstructions."),
+  permissionMode: optionalStringSchema("Required if permission_mode is omitted. Requested permission mode."),
+  permission_mode: optionalStringSchema("Snake_case alias for permissionMode."),
+  commandPreview: optionalStringSchema("Optional non-executing command/action preview."),
+  command_preview: optionalStringSchema("Snake_case alias for commandPreview."),
+  requestedCapabilities: optionalStringArraySchema("Optional requested capability labels."),
+  requested_capabilities: optionalStringArraySchema("Snake_case alias for requestedCapabilities."),
+  approvalPolicyVersion: optionalStringSchema("Optional approval policy version."),
+  approval_policy_version: optionalStringSchema("Snake_case alias for approvalPolicyVersion."),
+  metadata: z.record(z.unknown()).describe("Optional structured launch metadata.").optional()
+});
+
+const listLaunchRequestsInputSchema = z.object({
+  project: optionalStringSchema("Optional project filter."),
+  provider: clientTypeSchema.describe("Optional provider/client filter.").optional(),
+  status: launchRequestStatusSchema.describe("Optional launch request status filter.").optional(),
+  requestedBySessionUid: optionalStringSchema("Optional requester session filter."),
+  requested_by_session_uid: optionalStringSchema("Snake_case alias for requestedBySessionUid.")
+});
+
+const launchRequestUidInputSchema = z.object({
+  launchRequestUid: optionalStringSchema("Required if launch_request_uid is omitted. Launch request identifier."),
+  launch_request_uid: optionalStringSchema("Snake_case alias for launchRequestUid.")
+});
+
+const ownedLaunchRequestInputSchema = launchRequestUidInputSchema.extend({
+  sessionUid: optionalStringSchema("Required if session_uid is omitted. Acting session identifier."),
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
+  sessionToken: optionalStringSchema("Required if session_token is omitted. Acting session owner token."),
+  session_token: optionalStringSchema("Snake_case alias for sessionToken.")
+});
+
+const approveLaunchRequestInputSchema = ownedLaunchRequestInputSchema.extend({
+  detail: optionalStringSchema("Optional approval detail.")
+});
+
+const rejectLaunchRequestInputSchema = ownedLaunchRequestInputSchema.extend({
+  reason: requiredStringSchema("Rejection reason.")
+});
+
+const cancelLaunchRequestInputSchema = ownedLaunchRequestInputSchema.extend({
+  reason: requiredStringSchema("Cancellation reason.")
+});
+
+const markLaunchRequestLaunchingInputSchema = ownedLaunchRequestInputSchema.extend({
+  detail: optionalStringSchema("Optional broker transition detail.")
+});
+
+const markLaunchRequestRunningInputSchema = ownedLaunchRequestInputSchema.extend({
+  launchedSessionUid: optionalStringSchema("Required if launched_session_uid is omitted. Registered launched session identifier."),
+  launched_session_uid: optionalStringSchema("Snake_case alias for launchedSessionUid."),
+  detail: optionalStringSchema("Optional running transition detail.")
+});
+
+const failLaunchRequestInputSchema = ownedLaunchRequestInputSchema.extend({
+  reason: requiredStringSchema("Failure reason.")
 });
 
 const listAgentRolesInputSchema = z.object({
@@ -476,9 +571,17 @@ const reopenHandoffInputSchema = handoffUidInputSchema.extend({
 
 export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
   {
+    name: "vault_collab_get_agent_guide",
+    title: "Get Agent Guide",
+    description:
+      "Read the provider-neutral Vault Collab operating loop for any active agent before registering, claiming, or reporting no work.",
+    inputSchema: agentGuideInputSchema
+  },
+  {
     name: "vault_collab_register_session",
     title: "Register Session",
-    description: "Register a provider-neutral collaboration session and return its owner token.",
+    description:
+      "Register a provider-neutral collaboration session and return its owner token. After registering, immediately call vault_collab_get_session_attention for this session; active sessions should use that attention feed for pings, suggested handoffs, and inbox notices.",
     inputSchema: registerSessionInputSchema
   },
   {
@@ -525,6 +628,76 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: ownedSessionInputSchema
   },
   {
+    name: "vault_collab_create_launch_request",
+    title: "Create Launch Request",
+    description:
+      "Create a durable, token-audited launch request for later approval. This records intent only; it does not spawn a process.",
+    inputSchema: createLaunchRequestInputSchema
+  },
+  {
+    name: "vault_collab_list_launch_requests",
+    title: "List Launch Requests",
+    description: "List durable launch requests without exposing owner tokens.",
+    inputSchema: listLaunchRequestsInputSchema
+  },
+  {
+    name: "vault_collab_get_launch_request",
+    title: "Get Launch Request",
+    description: "Read a durable launch request by ID.",
+    inputSchema: launchRequestUidInputSchema
+  },
+  {
+    name: "vault_collab_get_launch_request_detail",
+    title: "Get Launch Request Detail",
+    description: "Read a launch request with token-safe lifecycle events.",
+    inputSchema: launchRequestUidInputSchema
+  },
+  {
+    name: "vault_collab_get_launch_request_actions",
+    title: "Get Launch Request Actions",
+    description:
+      "Read token-safe dashboard action affordances for an acting session and launch request.",
+    inputSchema: ownedLaunchRequestInputSchema
+  },
+  {
+    name: "vault_collab_approve_launch_request",
+    title: "Approve Launch Request",
+    description: "Approve a requested launch when the actor has launchApproval capability.",
+    inputSchema: approveLaunchRequestInputSchema
+  },
+  {
+    name: "vault_collab_reject_launch_request",
+    title: "Reject Launch Request",
+    description: "Reject a requested launch when the actor has launchApproval capability.",
+    inputSchema: rejectLaunchRequestInputSchema
+  },
+  {
+    name: "vault_collab_cancel_launch_request",
+    title: "Cancel Launch Request",
+    description: "Cancel a requested or approved launch as the requester or a launch approver.",
+    inputSchema: cancelLaunchRequestInputSchema
+  },
+  {
+    name: "vault_collab_mark_launch_request_launching",
+    title: "Mark Launch Request Launching",
+    description:
+      "Move an approved launch request to launching when the actor has launchBroker capability. This does not spawn a process.",
+    inputSchema: markLaunchRequestLaunchingInputSchema
+  },
+  {
+    name: "vault_collab_mark_launch_request_running",
+    title: "Mark Launch Request Running",
+    description:
+      "Attach an already registered launched session to a launching request when the actor has launchBroker capability.",
+    inputSchema: markLaunchRequestRunningInputSchema
+  },
+  {
+    name: "vault_collab_fail_launch_request",
+    title: "Fail Launch Request",
+    description: "Mark an approved, launching, or running launch request failed as a launch broker.",
+    inputSchema: failLaunchRequestInputSchema
+  },
+  {
     name: "vault_collab_list_agent_roles",
     title: "List Agent Roles",
     description: "List built-in provider-neutral agent role definitions.",
@@ -563,7 +736,8 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
   {
     name: "vault_collab_list_inbox",
     title: "List Inbox",
-    description: "List open handoffs for a project or lifecycle filter.",
+    description:
+      "List open handoffs for a project or lifecycle filter as a project queue snapshot. For an active registered session, prefer vault_collab_get_session_attention so session pings, suggested handoffs, claimed handoffs, and relevant discussions are not missed.",
     inputSchema: listInboxInputSchema
   },
   {
@@ -682,12 +856,19 @@ export function createVaultCollabMcpTools(
   const agents = new AgentProfileService(db, events, options.clock);
   const sessions = new SessionService(db, events, options.clock);
   const handoffs = new HandoffService(db, events, options.clock);
+  const launchRequests = new LaunchRequestService(db, events, options.clock);
   const discussions = new DiscussionService(db, events, options.clock);
   const handoffDetails = new HandoffDetailService(handoffs, events, sessions, discussions);
-  const attention = new AttentionService(db, sessions, handoffs, discussions, events);
+  const attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);
   const linkedHandoffs = options.vaultMemoryClient
     ? new VaultLinkedHandoffService(handoffs, options.vaultMemoryClient)
     : null;
+  const availableDefinitions = linkedHandoffs
+    ? vaultCollabToolDefinitions
+    : vaultCollabToolDefinitions.filter(
+        (definition) => definition.name !== vaultMemoryLinkedPublishToolName
+      );
+  const availableToolNames = new Set(availableDefinitions.map((definition) => definition.name));
   const autoHeartbeats = new AutoHeartbeatManager(
     sessions,
     options.heartbeatIntervalMs ?? defaultHeartbeatIntervalMs
@@ -697,6 +878,11 @@ export function createVaultCollabMcpTools(
     VaultCollabToolName,
     (args: Record<string, unknown>) => unknown | Promise<unknown>
   > = {
+    vault_collab_get_agent_guide: (args) =>
+      getAgentOperatingGuide({
+        clientType: optionalClientType(args, "clientType", "client_type") ?? null,
+        project: optionalString(args, "project") ?? null
+      }),
     vault_collab_register_session: (args) => {
       const registered = sessions.registerSession({
         displayName: requiredString(args, "displayName", "display_name"),
@@ -707,7 +893,7 @@ export function createVaultCollabMcpTools(
         capabilities: optionalRecord(args, "capabilities") ?? {}
       });
       autoHeartbeats.start(registered.sessionUid, registered.sessionToken);
-      return registered;
+      return withAttentionNextAction(registered);
     },
     vault_collab_heartbeat_session: (args) =>
       sessions.heartbeatSession(
@@ -759,6 +945,88 @@ export function createVaultCollabMcpTools(
       autoHeartbeats.stop(sessionUid);
       return disconnected;
     },
+    vault_collab_create_launch_request: (args) =>
+      launchRequests.createLaunchRequest({
+        requestedBySessionUid: requiredString(args, "sessionUid", "session_uid"),
+        sessionToken: requiredString(args, "sessionToken", "session_token"),
+        provider: requiredClientType(args, "provider"),
+        model: requiredString(args, "model"),
+        effortLevel: optionalString(args, "effortLevel", "effort_level") ?? null,
+        project: requiredString(args, "project"),
+        workspacePath: requiredString(args, "workspacePath", "workspace_path"),
+        role: optionalString(args, "role") ?? null,
+        initialInstructions: requiredString(args, "initialInstructions", "initial_instructions"),
+        permissionMode: requiredString(args, "permissionMode", "permission_mode"),
+        commandPreview: optionalString(args, "commandPreview", "command_preview") ?? null,
+        requestedCapabilities:
+          optionalStringArray(args, "requestedCapabilities", "requested_capabilities") ?? [],
+        approvalPolicyVersion:
+          optionalString(args, "approvalPolicyVersion", "approval_policy_version") ?? null,
+        metadata: optionalRecord(args, "metadata") ?? {}
+      }),
+    vault_collab_list_launch_requests: (args) =>
+      launchRequests.listLaunchRequests({
+        project: optionalString(args, "project"),
+        provider: optionalClientType(args, "provider"),
+        status: optionalLaunchRequestStatus(args, "status"),
+        requestedBySessionUid:
+          optionalString(args, "requestedBySessionUid", "requested_by_session_uid") ?? undefined
+      }),
+    vault_collab_get_launch_request: (args) =>
+      launchRequests.getLaunchRequest(requiredString(args, "launchRequestUid", "launch_request_uid")),
+    vault_collab_get_launch_request_detail: (args) =>
+      launchRequests.getLaunchRequestDetail(
+        requiredString(args, "launchRequestUid", "launch_request_uid")
+      ),
+    vault_collab_get_launch_request_actions: (args) =>
+      launchRequests.getLaunchRequestActions(
+        requiredString(args, "launchRequestUid", "launch_request_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token")
+      ),
+    vault_collab_approve_launch_request: (args) =>
+      launchRequests.approveLaunchRequest(
+        requiredString(args, "launchRequestUid", "launch_request_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        optionalString(args, "detail") ?? null
+      ),
+    vault_collab_reject_launch_request: (args) =>
+      launchRequests.rejectLaunchRequest(
+        requiredString(args, "launchRequestUid", "launch_request_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        requiredString(args, "reason")
+      ),
+    vault_collab_cancel_launch_request: (args) =>
+      launchRequests.cancelLaunchRequest(
+        requiredString(args, "launchRequestUid", "launch_request_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        requiredString(args, "reason")
+      ),
+    vault_collab_mark_launch_request_launching: (args) =>
+      launchRequests.markLaunchRequestLaunching(
+        requiredString(args, "launchRequestUid", "launch_request_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        optionalString(args, "detail") ?? null
+      ),
+    vault_collab_mark_launch_request_running: (args) =>
+      launchRequests.markLaunchRequestRunning(
+        requiredString(args, "launchRequestUid", "launch_request_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        requiredString(args, "launchedSessionUid", "launched_session_uid"),
+        optionalString(args, "detail") ?? null
+      ),
+    vault_collab_fail_launch_request: (args) =>
+      launchRequests.failLaunchRequest(
+        requiredString(args, "launchRequestUid", "launch_request_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        requiredString(args, "reason")
+      ),
     vault_collab_list_agent_roles: () => agents.listRoleDefinitions(),
     vault_collab_upsert_agent_profile: (args) =>
       agents.upsertAgentProfile({
@@ -802,7 +1070,7 @@ export function createVaultCollabMcpTools(
       }),
     vault_collab_publish_handoff_with_vault_memory: (args) => {
       if (!linkedHandoffs) {
-        throw new Error("Vault memory client is not configured for linked handoff publishing");
+        throw new Error(vaultLinkedPublishUnavailableMessage());
       }
 
       return linkedHandoffs.publishHandoffWithVaultMemory({
@@ -971,10 +1239,13 @@ export function createVaultCollabMcpTools(
   };
 
   return {
-    definitions: vaultCollabToolDefinitions,
+    definitions: availableDefinitions,
     callTool: async (name, args) => {
       if (!isVaultCollabToolName(name)) {
         return errorResult(`Unknown Vault Collab tool: ${name}`);
+      }
+      if (!availableToolNames.has(name)) {
+        return errorResult(vaultLinkedPublishUnavailableMessage());
       }
 
       try {
@@ -994,6 +1265,13 @@ export function createVaultCollabMcpTools(
 
 function isVaultCollabToolName(name: string): name is VaultCollabToolName {
   return (vaultCollabToolNames as readonly string[]).includes(name);
+}
+
+function vaultLinkedPublishUnavailableMessage(): string {
+  return [
+    "Vault-linked handoff publishing is not available because this server was started without a VaultMemoryClient.",
+    "Use vault_save_memory through Vault MCP to save the full brief, then call vault_collab_publish_handoff with vaultMemoryUid."
+  ].join(" ");
 }
 
 function successResult(result: unknown): VaultCollabToolResult {
@@ -1196,6 +1474,22 @@ function parseHandoffPriority(value: string): HandoffPriority {
   }
 
   return value as HandoffPriority;
+}
+
+function optionalLaunchRequestStatus(
+  args: Record<string, unknown>,
+  ...keys: string[]
+): LaunchRequestStatus | undefined {
+  const value = optionalString(args, ...keys);
+  return value ? parseLaunchRequestStatus(value) : undefined;
+}
+
+function parseLaunchRequestStatus(value: string): LaunchRequestStatus {
+  if (!launchRequestStatusValues.includes(value as (typeof launchRequestStatusValues)[number])) {
+    throw new Error(`Invalid launch request status: ${value}`);
+  }
+
+  return value as LaunchRequestStatus;
 }
 
 function optionalAgentProfileStatus(

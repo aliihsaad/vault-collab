@@ -97,6 +97,12 @@ describe("AgentProfileService", () => {
       agentUid: created.agentUid,
       stableName: "repo-coordinator"
     });
+    expect(
+      service.listAgentProfiles({
+        project: "vault-collab",
+        status: "active"
+      })
+    ).toHaveLength(1);
     expect(JSON.stringify(listed)).not.toContain("sessionToken");
   });
 
@@ -118,5 +124,24 @@ describe("AgentProfileService", () => {
       role: "reviewer",
       clientType: "claude-code"
     });
+  });
+
+  it("routes agent profiles by persisted project key instead of mutable display label", () => {
+    const agent = service.upsertAgentProfile({
+      stableName: "codex-worker",
+      displayName: "Codex Worker",
+      role: "implementer",
+      clientType: "codex",
+      project: "Vault Collab"
+    });
+
+    db.prepare("UPDATE agent_profiles SET project = ? WHERE agent_uid = ?").run(
+      "Renamed Display Label",
+      agent.agentUid
+    );
+
+    expect(service.listAgentProfiles({ project: "vault-collab" })[0]?.agentUid).toBe(
+      agent.agentUid
+    );
   });
 });

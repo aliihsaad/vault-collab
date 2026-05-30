@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type {
   AddDiscussionMessageInput,
@@ -24,6 +25,7 @@ interface DiscussionThreadRow {
   thread_uid: string;
   handoff_uid: string | null;
   project: string;
+  project_key: string;
   title: string;
   status: DiscussionThreadStatus;
   created_by_session_uid: string | null;
@@ -62,13 +64,14 @@ export class DiscussionService {
     if (input.handoffUid) {
       const targetProject = this.requireHandoffTargetProject(input.handoffUid);
 
-      if (targetProject !== input.project) {
+      if (targetProject.projectKey !== projectKey(input.project)) {
         throw new Error("Discussion project must match handoff target project");
       }
     }
 
     const now = this.now();
     const threadUid = `vc_thread_${randomUUID()}`;
+    const threadProjectKey = projectKey(input.project);
 
     this.db
       .prepare(
@@ -77,6 +80,7 @@ export class DiscussionService {
           thread_uid,
           handoff_uid,
           project,
+          project_key,
           title,
           status,
           created_by_session_uid,
@@ -84,13 +88,14 @@ export class DiscussionService {
           updated_at,
           resolved_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
         threadUid,
         input.handoffUid ?? null,
         input.project,
+        threadProjectKey,
         title,
         "open",
         input.createdBySessionUid,
@@ -114,7 +119,7 @@ export class DiscussionService {
   }
 
   createHandoffThread(input: CreateHandoffDiscussionThreadInput): DiscussionThreadSummary {
-    const project = this.requireHandoffTargetProject(input.handoffUid);
+    const { project } = this.requireHandoffTargetProject(input.handoffUid);
     return this.createThread({
       project,
       handoffUid: input.handoffUid,
@@ -197,14 +202,14 @@ export class DiscussionService {
     const clauses: string[] = [];
     const params: string[] = [];
 
-    if (filter.project) {
-      clauses.push("discussion_threads.project = ?");
-      params.push(filter.project);
-    }
-
     if (filter.handoffUid) {
       clauses.push("discussion_threads.handoff_uid = ?");
       params.push(filter.handoffUid);
+    }
+
+    if (filter.project) {
+      clauses.push("discussion_threads.project_key = ?");
+      params.push(projectKey(filter.project));
     }
 
     if (filter.status) {
@@ -266,15 +271,18 @@ export class DiscussionService {
     return thread;
   }
 
-  private requireHandoffTargetProject(handoffUid: string): string {
+  private requireHandoffTargetProject(handoffUid: string): { project: string; projectKey: string } {
     const handoff = this.db
-      .prepare("SELECT target_project FROM handoffs WHERE handoff_uid = ?")
-      .get(handoffUid) as { target_project: string } | undefined;
+      .prepare("SELECT target_project, target_project_key FROM handoffs WHERE handoff_uid = ?")
+      .get(handoffUid) as { target_project: string; target_project_key: string | null } | undefined;
     if (!handoff) {
       throw new Error(`Handoff not found: ${handoffUid}`);
     }
 
-    return handoff.target_project;
+    return {
+      project: handoff.target_project,
+      projectKey: handoff.target_project_key ?? projectKey(handoff.target_project)
+    };
   }
 
   private findThreadSummary(threadUid: string): DiscussionThreadSummary | null {
@@ -327,6 +335,7 @@ export class DiscussionService {
           discussion_threads.thread_uid,
           discussion_threads.handoff_uid,
           discussion_threads.project,
+          discussion_threads.project_key,
           discussion_threads.title,
           discussion_threads.status,
           discussion_threads.created_by_session_uid,

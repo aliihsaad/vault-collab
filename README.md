@@ -24,11 +24,17 @@ Vault Collab is an early standalone core. The current implementation covers:
 - Read-only event history for session and handoff lifecycle inspection.
 - Soft session pings and explicit permission-needed events for dashboard
   attention indicators.
+- Durable launch requests that record spawn intent, approvals, broker pickup,
+  registered launched sessions, and failure/cancel states without directly
+  spawning a process.
 - Durable provider-neutral agent profiles with advisory role metadata.
 - Optional session binding to an agent profile.
 - Labeled and ordered handoff queues through `queueKey`, `labels`,
   `queuePosition`, and `dependsOnHandoffUid`.
 - Append-only discussion threads and messages tied to projects or handoffs.
+- Deterministic project-key matching so clients using labels such as
+  `Vault Collab`, `vault-collab`, or `vault_collab` still see the same
+  sessions, handoffs, profiles, and discussions.
 
 The current scope intentionally does not include:
 
@@ -36,6 +42,7 @@ The current scope intentionally does not include:
 - Graphify enrichment.
 - Octogent bridge automation.
 - Auto-execution of work.
+- Direct dashboard or MCP process spawning.
 - Auto-claiming or interruption of active sessions.
 - Delete or clean commands.
 - Hard-coded manager/worker/inspector client classes.
@@ -115,14 +122,102 @@ $workspace = (Get-Location).Path
 $db = Join-Path $workspace ".vault-collab.db"
 ```
 
+Read the provider-neutral agent guide first. It is the same loop exposed through
+the MCP `vault_collab_get_agent_guide` tool, so any agent can learn the workflow
+without Codex-specific memory:
+
+```powershell
+node dist\cli.js guide --client-type codex --project "Vault Collab"
+```
+
+The guide tells agents to register, immediately check the attention feed, inspect
+handoff detail before acting, claim only when idle and ready, keep state current,
+use handoff-linked discussions for coordination, and recheck attention before
+reporting that no work is available. It also returns a `projectKey` field; use
+that key as the stable routing identity when different clients format a project
+label differently.
+
 Register a session:
 
 ```powershell
 node dist\cli.js register --db $db --display-name "Codex" --client-type codex --project "Vault Collab" --workspace-path $workspace --capability handoffs=true
 ```
 
-The response includes a `sessionUid` and `sessionToken`. Keep the token private.
-Listing commands do not expose session tokens.
+The response includes a `sessionUid`, `sessionToken`, and `nextActions`. Keep the
+token private. Listing commands do not expose session tokens. The first
+`nextActions` entry points back to the attention feed so agents do not need
+Codex-specific memory to know the next step.
+
+After registering, active agents should immediately read their session attention
+feed before reporting that no work is available:
+
+```powershell
+node dist\cli.js attention --db $db --session-uid vc_sess_...
+```
+
+This one-shot check is the active-session discovery surface. It includes pings,
+suggested handoffs, claimed handoffs, discussion messages, permission requests,
+and available project handoffs. `inbox` remains useful for queue inspection, but
+it is only a project snapshot and does not replace the attention feed for a
+registered session. Prefer repeated one-shot attention checks at startup and
+idle boundaries over long-running waits; this matches AI clients' command/result
+execution model and avoids backgrounded competing consumers.
+
+Project filters use deterministic project keys. A session registered under
+`vault-collab` can still see a handoff targeted at `Vault Collab`; exact display
+casing is preserved in records, but routing is by key.
+
+Create a launch request:
+
+```powershell
+node dist\cli.js launch-create --db $db --session-uid vc_sess_... --session-token ... --provider codex --model gpt-5-codex --effort-level high --project "Vault Collab" --workspace-path $workspace --role implementer --initial-instructions "Implement the approved broker slice." --permission-mode workspace-write
+```
+
+Launch requests are durable operator intent records. Creating one does not start
+a terminal, spawn an agent, or bypass approvals. A session with
+`launchApproval=true` can approve or reject a requested launch:
+
+```powershell
+node dist\cli.js launch-approve --db $db --launch-request-uid vc_launch_... --session-uid vc_sess_... --session-token ... --detail "Approved for local broker pickup."
+node dist\cli.js launch-reject --db $db --launch-request-uid vc_launch_... --session-uid vc_sess_... --session-token ... --reason "Needs a tighter brief."
+```
+
+A separate local broker session with `launchBroker=true` can mark an approved
+request as launching and later attach an already registered launched session:
+
+```powershell
+node dist\cli.js launch-mark-launching --db $db --launch-request-uid vc_launch_... --session-uid vc_sess_... --session-token ... --detail "Broker accepted request."
+node dist\cli.js launch-mark-running --db $db --launch-request-uid vc_launch_... --session-uid vc_sess_... --session-token ... --launched-session-uid vc_sess_... --detail "Launched session registered."
+```
+
+Inspect launch requests:
+
+```powershell
+node dist\cli.js launches --db $db --project "Vault Collab"
+node dist\cli.js launch --db $db --launch-request-uid vc_launch_...
+node dist\cli.js launch-actions --db $db --launch-request-uid vc_launch_... --session-uid vc_sess_... --session-token ...
+```
+
+Dashboard consumption contract:
+
+- Launch request records are token-safe for read-only dashboards. They do not
+  contain session owner tokens or process handles.
+- Read-only dashboards may query `launch_requests` directly when the table
+  exists. Keep the query optional so old databases still render.
+- `requested`, `approved`, `launching`, and `running` are current dashboard
+  states. `running` should appear in record lists, not as a persistent current
+  attention item; `launch_request.running` may still appear as a lifecycle event
+  for cursor-based attention consumers.
+- A compact dashboard DTO may be added later if another host should consume
+  launch requests without SQLite schema coupling, but it is not required for the
+  first The Vault read-only dashboard cards.
+- No additional action-state event is required before read-only cards. Future
+  actions must go through owner-token-aware approval/cancel paths and
+  `launchBroker`-gated broker transitions. The dashboard must not directly spawn
+  processes from a launch request.
+- See [`docs/cockpit-v2-actionable-dashboard-contract.md`](docs/cockpit-v2-actionable-dashboard-contract.md)
+  for live-vs-closed session roster semantics and the owner-token-aware
+  `actions` affordance contract for dashboard buttons.
 
 Create a durable agent profile and bind a provider session to it:
 
@@ -208,13 +303,19 @@ Read an active session's attention feed:
 node dist\cli.js attention --db $db --session-uid vc_sess_...
 
 node dist\cli.js attention --db $db --session-uid vc_sess_... --since-event-id 42 --no-current-handoffs
+
+node dist\cli.js watch-attention --db $db --session-uid vc_sess_... --interval-ms 2000 --timeout-ms 30000
 ```
 
 The feed is token-safe and does not mutate state. It aggregates pings,
 permission-needed events, discussion messages on relevant handoffs, claimed
-handoffs, suggested handoffs, and available project handoffs. It is meant for
-active agents or a future watcher/daemon to poll; it is not a delivery guarantee
-for stopped clients.
+handoffs, suggested handoffs, and available project handoffs. `watch-attention`
+is a bounded local helper loop over the same feed. It returns when attention
+items appear or the timeout expires, then prints manual `recommendedActions`
+such as inspecting detail or running `claim` with the caller's owner token. It
+does not mutate state, auto-claim, wake a stopped client, or execute commands.
+`ping-session` is therefore still only a passive event unless the target agent
+checks `attention` or has `watch-attention` running.
 
 Inspect event history:
 
@@ -262,6 +363,7 @@ node dist\mcp\server.js
 
 Available MCP tools include:
 
+- `vault_collab_get_agent_guide`
 - `vault_collab_register_session`
 - `vault_collab_heartbeat_session`
 - `vault_collab_update_session_state`
@@ -270,6 +372,17 @@ Available MCP tools include:
 - `vault_collab_list_sessions`
 - `vault_collab_get_session_attention`
 - `vault_collab_disconnect_session`
+- `vault_collab_create_launch_request`
+- `vault_collab_list_launch_requests`
+- `vault_collab_get_launch_request`
+- `vault_collab_get_launch_request_detail`
+- `vault_collab_get_launch_request_actions`
+- `vault_collab_approve_launch_request`
+- `vault_collab_reject_launch_request`
+- `vault_collab_cancel_launch_request`
+- `vault_collab_mark_launch_request_launching`
+- `vault_collab_mark_launch_request_running`
+- `vault_collab_fail_launch_request`
 - `vault_collab_list_agent_roles`
 - `vault_collab_upsert_agent_profile`
 - `vault_collab_list_agent_profiles`
@@ -308,8 +421,11 @@ Supported link paths:
   programmatically.
 
 The standalone stdio server does not silently call Vault MCP. If no
-`VaultMemoryClient` is injected, `vault_collab_publish_handoff_with_vault_memory`
-returns an explicit configuration error.
+`VaultMemoryClient` is injected, the standalone MCP server does not advertise
+`vault_collab_publish_handoff_with_vault_memory`. If a stale client still calls
+the tool by name, it returns an explicit fallback instruction: save the full
+brief with Vault MCP `vault_save_memory`, then call
+`vault_collab_publish_handoff` with the returned `vaultMemoryUid`.
 
 See [`docs/phase-4-vault-link.md`](docs/phase-4-vault-link.md) for detailed
 Phase 4 usage.
@@ -331,6 +447,7 @@ src/
     event.service.ts        append-only event recording and listing
     handoff-detail.service.ts selected handoff detail bundle
     handoff.service.ts      handoff lifecycle and token ownership
+    launch-request.service.ts launch request approval and broker state machine
     session.service.ts      session lifecycle and owner tokens
     vault-link.service.ts   optional Vault memory linked publishing
   types.ts                  shared public types
@@ -338,13 +455,15 @@ tests/
   *.test.ts                 Vitest coverage for services, CLI, MCP, Vault links
 docs/
   phase-4-vault-link.md     linked handoff usage guide
+  cockpit-v2-actionable-dashboard-contract.md dashboard roster/action contract
   v1-plan.md                current scope and deferred areas
 ```
 
 ## Design Principles
 
 - Local-first: SQLite state stays on the user's machine.
-- Inspectable: sessions, handoffs, and events are readable through CLI/MCP.
+- Inspectable: sessions, handoffs, launch requests, and events are readable
+  through CLI/MCP.
 - Provider-neutral: clients identify by capability and client type, not fixed
   roles.
 - Token-owned mutations: sensitive lifecycle updates require the owning session
@@ -360,6 +479,9 @@ docs/
   scope.
 - No hidden automation: Vault Collab coordinates work but does not execute,
   auto-claim, or interrupt active sessions.
+- Broker split: launch requests record intent and approval; only a separate
+  launchBroker-capable local broker can mark pickup/running, and this package
+  still does not spawn processes directly.
 
 ## Documentation
 

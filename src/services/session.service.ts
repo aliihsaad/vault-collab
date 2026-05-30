@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type {
   ClientType,
@@ -19,6 +20,7 @@ interface SessionRow {
   display_name: string;
   client_type: ClientType;
   project: string;
+  project_key: string;
   workspace_path: string;
   status: SessionStatus;
   status_detail: string | null;
@@ -55,6 +57,7 @@ export class SessionService {
           display_name,
           client_type,
           project,
+          project_key,
           workspace_path,
           status,
           status_detail,
@@ -67,7 +70,7 @@ export class SessionService {
           updated_at,
           disconnected_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -75,6 +78,7 @@ export class SessionService {
         input.displayName,
         input.clientType,
         input.project,
+        projectKey(input.project),
         input.workspacePath,
         "idle",
         null,
@@ -244,14 +248,14 @@ export class SessionService {
     const clauses: string[] = [];
     const params: string[] = [];
 
-    if (filter.project) {
-      clauses.push("sessions.project = ?");
-      params.push(filter.project);
-    }
-
     if (filter.clientType) {
       clauses.push("sessions.client_type = ?");
       params.push(filter.clientType);
+    }
+
+    if (filter.project) {
+      clauses.push("sessions.project_key = ?");
+      params.push(projectKey(filter.project));
     }
 
     if (filter.status) {
@@ -374,6 +378,7 @@ export class SessionService {
           sessions.display_name,
           sessions.client_type,
           sessions.project,
+          sessions.project_key,
           sessions.workspace_path,
           sessions.status,
           sessions.status_detail,

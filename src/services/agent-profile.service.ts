@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type {
   AgentProfile,
@@ -19,6 +20,7 @@ interface AgentProfileRow {
   role: string;
   client_type: ClientType | null;
   project: string | null;
+  project_key: string | null;
   description: string | null;
   capabilities_json: string;
   status: AgentProfileStatus;
@@ -73,6 +75,7 @@ export class AgentProfileService {
     const role = input.role ?? ("implementer" satisfies BuiltInAgentRole);
     const status = input.status ?? "active";
     const archivedAt = status === "archived" ? now : null;
+    const profileProjectKey = input.project ? projectKey(input.project) : null;
 
     if (existing) {
       this.db
@@ -83,6 +86,7 @@ export class AgentProfileService {
               role = ?,
               client_type = ?,
               project = ?,
+              project_key = ?,
               description = ?,
               capabilities_json = ?,
               status = ?,
@@ -97,6 +101,7 @@ export class AgentProfileService {
           role,
           input.clientType ?? null,
           input.project ?? null,
+          profileProjectKey,
           input.description ?? null,
           JSON.stringify(input.capabilities ?? {}),
           status,
@@ -121,6 +126,7 @@ export class AgentProfileService {
           role,
           client_type,
           project,
+          project_key,
           description,
           capabilities_json,
           status,
@@ -129,7 +135,7 @@ export class AgentProfileService {
           updated_at,
           archived_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -139,6 +145,7 @@ export class AgentProfileService {
         role,
         input.clientType ?? null,
         input.project ?? null,
+        profileProjectKey,
         input.description ?? null,
         JSON.stringify(input.capabilities ?? {}),
         status,
@@ -156,14 +163,14 @@ export class AgentProfileService {
     const clauses: string[] = [];
     const params: string[] = [];
 
-    if (filter.project) {
-      clauses.push("project = ?");
-      params.push(filter.project);
-    }
-
     if (filter.role) {
       clauses.push("role = ?");
       params.push(filter.role);
+    }
+
+    if (filter.project) {
+      clauses.push("project_key = ?");
+      params.push(projectKey(filter.project));
     }
 
     if (filter.status) {
