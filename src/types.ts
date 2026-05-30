@@ -337,6 +337,36 @@ export interface HandoffRecord {
   staleAt: string | null;
 }
 
+export type HandoffActionKind =
+  | "claim"
+  | "update"
+  | "request_user_confirmation"
+  | "request_handoff_permission"
+  | "release"
+  | "resolve"
+  | "recover"
+  | "reopen";
+
+export interface HandoffActionAffordance {
+  kind: HandoffActionKind;
+  enabled: boolean;
+  reason: string;
+  toolName: string;
+  requiredCapability: string | null;
+  requiresOwnerToken: boolean;
+  requiresProgressNote: boolean;
+  requiresQuestion: boolean;
+  requiresReason: boolean;
+  requiresSummary: boolean;
+  requiresEvidenceVaultMemoryUid: boolean;
+}
+
+export interface HandoffActionSet {
+  handoff: HandoffRecord;
+  actingSessionUid: string;
+  actions: HandoffActionAffordance[];
+}
+
 export interface HandoffDetail {
   handoff: HandoffRecord;
   events: EventRecord[];

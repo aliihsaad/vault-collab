@@ -55,6 +55,7 @@ export const vaultCollabToolNames = [
   "vault_collab_list_inbox",
   "vault_collab_get_handoff",
   "vault_collab_get_handoff_detail",
+  "vault_collab_get_handoff_actions",
   "vault_collab_update_handoff_metadata",
   "vault_collab_create_discussion_thread",
   "vault_collab_create_handoff_discussion_thread",
@@ -753,6 +754,12 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: handoffUidInputSchema
   },
   {
+    name: "vault_collab_get_handoff_actions",
+    title: "Get Handoff Actions",
+    description: "Read token-safe dashboard action affordances for an acting session and handoff.",
+    inputSchema: ownedHandoffInputSchema
+  },
+  {
     name: "vault_collab_update_handoff_metadata",
     title: "Update Handoff Metadata",
     description: "Update labels and queue metadata as the source or claimed session owner.",
@@ -1115,6 +1122,12 @@ export function createVaultCollabMcpTools(
       handoffs.getHandoff(requiredString(args, "handoffUid", "handoff_uid")),
     vault_collab_get_handoff_detail: (args) =>
       handoffDetails.getHandoffDetail(requiredString(args, "handoffUid", "handoff_uid")),
+    vault_collab_get_handoff_actions: (args) =>
+      handoffs.getHandoffActions(
+        requiredString(args, "handoffUid", "handoff_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token")
+      ),
     vault_collab_update_handoff_metadata: (args) =>
       handoffs.updateHandoffMetadata(
         requiredString(args, "handoffUid", "handoff_uid"),

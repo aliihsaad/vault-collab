@@ -225,6 +225,47 @@ describe("vault-collab CLI", () => {
       claimedBySessionUid: claude.sessionUid
     });
 
+    const handoffActions = parseJson<{
+      handoff: { handoffUid: string; status: string };
+      actingSessionUid: string;
+      actions: Array<{ kind: string; enabled: boolean; toolName: string }>;
+    }>(
+      await runCli([
+        "handoff-actions",
+        "--db",
+        dbPath,
+        "--handoff-uid",
+        published.handoffUid,
+        "--session-uid",
+        claude.sessionUid,
+        "--session-token",
+        claude.sessionToken
+      ])
+    );
+
+    expect(handoffActions).toMatchObject({
+      handoff: {
+        handoffUid: published.handoffUid,
+        status: "claimed"
+      },
+      actingSessionUid: claude.sessionUid
+    });
+    expect(handoffActions.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "update",
+          enabled: true,
+          toolName: "vault_collab_update_handoff"
+        }),
+        expect.objectContaining({
+          kind: "release",
+          enabled: true,
+          toolName: "vault_collab_release_handoff"
+        })
+      ])
+    );
+    expect(JSON.stringify(handoffActions)).not.toContain(claude.sessionToken);
+
     const updated = parseJson<{ status: string; progressNote: string }>(
       await runCli([
         "update",

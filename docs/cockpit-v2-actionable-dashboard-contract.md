@@ -1,9 +1,9 @@
 # Cockpit V2 Actionable Dashboard Contract
 
 This contract is for dashboard hosts, including The Vault desktop UI, that render
-Vault Collab sessions and launch requests. The dashboard may inspect state, but
-it must not infer authority from visible records alone and must not spawn
-provider processes directly.
+Vault Collab sessions, handoffs, discussions, and launch requests. The dashboard
+may inspect state, but it must not infer authority from visible records alone and
+must not spawn provider processes directly.
 
 ## Session Roster Semantics
 
@@ -36,6 +36,97 @@ mutation updates it.
 
 Handoff statuses `resolved`, `abandoned`, and `stale` are closed handoff states,
 not session states. Render them in history surfaces, not the live session roster.
+
+## Handoff Actions
+
+Use the owner-token lifecycle mutations for handoff buttons. The dashboard should
+call `vault_collab_get_handoff_actions` first with the acting session UID and
+owner token, then render only enabled actions.
+
+Action affordance tool:
+
+```json
+{
+  "tool": "vault_collab_get_handoff_actions",
+  "args": {
+    "handoffUid": "vc_handoff_...",
+    "sessionUid": "vc_sess_...",
+    "sessionToken": "<owner-token>"
+  }
+}
+```
+
+The response is token-safe:
+
+```ts
+interface HandoffActionSet {
+  handoff: HandoffRecord;
+  actingSessionUid: string;
+  actions: HandoffActionAffordance[];
+}
+
+interface HandoffActionAffordance {
+  kind:
+    | "claim"
+    | "update"
+    | "request_user_confirmation"
+    | "request_handoff_permission"
+    | "release"
+    | "resolve"
+    | "recover"
+    | "reopen";
+  enabled: boolean;
+  reason: string;
+  toolName: string;
+  requiredCapability: string | null;
+  requiresOwnerToken: boolean;
+  requiresProgressNote: boolean;
+  requiresQuestion: boolean;
+  requiresReason: boolean;
+  requiresSummary: boolean;
+  requiresEvidenceVaultMemoryUid: boolean;
+}
+```
+
+Action semantics:
+
+- `claim`: enabled only for unclaimed `available` handoffs; calls
+  `vault_collab_claim_handoff`.
+- `update`: enabled only for the claimed session owner on open handoffs; requires
+  a progress note/status; calls `vault_collab_update_handoff`.
+- `request_user_confirmation`: enabled only for the claimed session owner on
+  open handoffs; requires a question; calls
+  `vault_collab_request_user_confirmation`.
+- `request_handoff_permission`: enabled only for the claimed session owner on
+  open handoffs; requires a question; calls
+  `vault_collab_request_handoff_permission`.
+- `release`: enabled only for the claimed session owner on open handoffs; calls
+  `vault_collab_release_handoff`.
+- `resolve`: enabled only for the claimed session owner on open handoffs;
+  requires a summary; calls `vault_collab_resolve_handoff`.
+- `recover`: enabled only for the source session or a `handoffRecovery`/`admin`
+  capable session on open handoffs; requires a reason, summary, and evidence
+  Vault memory UID; calls `vault_collab_recover_handoff`.
+- `reopen`: enabled for closed handoffs; requires a reason; calls
+  `vault_collab_reopen_handoff`.
+
+Each mutation remains audited by a `handoff.*` event. The dashboard must pass the
+acting session token only to the selected mutation call; it must not store or
+render owner tokens.
+
+## Discussion Actions
+
+Dashboard discussion controls should use the existing discussion lifecycle tools:
+
+- `vault_collab_create_handoff_discussion_thread`
+- `vault_collab_add_discussion_message`
+- `vault_collab_list_discussion_threads`
+- `vault_collab_get_discussion_thread`
+
+Discussion messages are attention events for relevant sessions, but passive
+thread records are not enough for an operational dashboard. The UI should surface
+new discussion messages as actionable attention and provide compose/reply
+controls directly in the handoff inspector.
 
 ## Launch Request Actions
 

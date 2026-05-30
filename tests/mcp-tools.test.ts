@@ -80,6 +80,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_list_inbox",
       "vault_collab_get_handoff",
       "vault_collab_get_handoff_detail",
+      "vault_collab_get_handoff_actions",
       "vault_collab_update_handoff_metadata",
       "vault_collab_create_discussion_thread",
       "vault_collab_create_handoff_discussion_thread",
@@ -405,6 +406,70 @@ describe("Vault Collab MCP tools", () => {
     for (const value of ["available", "claimed", "resolved", "abandoned", "stale"]) {
       expect(status.safeParse(value).success, value).toBe(false);
     }
+  });
+
+  it("returns token-safe handoff action affordances for dashboards", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const source = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Source",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const worker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Worker",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const handoff = structured<{ handoffUid: string }>(
+      await tools.callTool("vault_collab_publish_handoff", {
+        shortPrompt: "Render dashboard handoff buttons.",
+        sourceProject: "Vault Collab",
+        targetProject: "Vault Collab",
+        sourceSessionUid: source.sessionUid
+      })
+    );
+
+    const actions = structured<{
+      handoff: { handoffUid: string };
+      actingSessionUid: string;
+      actions: Array<{ kind: string; enabled: boolean; toolName: string }>;
+    }>(
+      await tools.callTool("vault_collab_get_handoff_actions", {
+        handoffUid: handoff.handoffUid,
+        sessionUid: worker.sessionUid,
+        sessionToken: worker.sessionToken
+      })
+    );
+
+    expect(actions).toMatchObject({
+      handoff: {
+        handoffUid: handoff.handoffUid
+      },
+      actingSessionUid: worker.sessionUid
+    });
+    expect(actions.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "claim",
+          enabled: true,
+          toolName: "vault_collab_claim_handoff"
+        }),
+        expect.objectContaining({
+          kind: "resolve",
+          enabled: false,
+          toolName: "vault_collab_resolve_handoff"
+        })
+      ])
+    );
+    expect(JSON.stringify(actions)).not.toContain(worker.sessionToken);
   });
 
   it("does not expose empty passthrough-only schemas for any MCP tool", () => {

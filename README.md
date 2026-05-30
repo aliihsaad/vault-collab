@@ -198,6 +198,13 @@ node dist\cli.js launch --db $db --launch-request-uid vc_launch_...
 node dist\cli.js launch-actions --db $db --launch-request-uid vc_launch_... --session-uid vc_sess_... --session-token ...
 ```
 
+Inspect token-safe handoff action affordances before rendering dashboard
+lifecycle buttons:
+
+```powershell
+node dist\cli.js handoff-actions --db $db --handoff-uid vc_handoff_... --session-uid vc_sess_... --session-token ...
+```
+
 Dashboard consumption contract:
 
 - Launch request records are token-safe for read-only dashboards. They do not
@@ -213,8 +220,8 @@ Dashboard consumption contract:
   first The Vault read-only dashboard cards.
 - No additional action-state event is required before read-only cards. Future
   actions must go through owner-token-aware approval/cancel paths and
-  `launchBroker`-gated broker transitions. The dashboard must not directly spawn
-  processes from a launch request.
+  handoff lifecycle methods or `launchBroker`-gated broker transitions. The
+  dashboard must not directly spawn processes from a launch request.
 - See [`docs/cockpit-v2-actionable-dashboard-contract.md`](docs/cockpit-v2-actionable-dashboard-contract.md)
   for live-vs-closed session roster semantics and the owner-token-aware
   `actions` affordance contract for dashboard buttons.
@@ -392,6 +399,7 @@ Available MCP tools include:
 - `vault_collab_list_inbox`
 - `vault_collab_get_handoff`
 - `vault_collab_get_handoff_detail`
+- `vault_collab_get_handoff_actions`
 - `vault_collab_update_handoff_metadata`
 - `vault_collab_create_discussion_thread`
 - `vault_collab_create_handoff_discussion_thread`

@@ -7,12 +7,16 @@ import type {
   ClientType,
   HandoffFilters,
   HandoffPriority,
+  HandoffActionAffordance,
+  HandoffActionKind,
+  HandoffActionSet,
   HandoffRecord,
   HandoffStatus,
   JsonRecord,
   PermissionRequestInput,
   PublishHandoffInput,
   RecoverHandoffInput,
+  SessionStatus,
   UpdateHandoffMetadataInput
 } from "../types.js";
 
@@ -217,6 +221,93 @@ export class HandoffService {
     return row ? this.mapRow(row) : null;
   }
 
+  getHandoffActions(
+    handoffUid: string,
+    sessionUid: string,
+    sessionToken: string
+  ): HandoffActionSet {
+    const actor = this.assertSessionOwner(sessionUid, sessionToken);
+    const row = this.findHandoffRow(handoffUid);
+    if (!row) {
+      throw new Error(`Handoff not found: ${handoffUid}`);
+    }
+
+    const actorCapabilities = JSON.parse(actor.capabilities_json) as Record<string, unknown>;
+    const isClaimOwner = row.claimed_by_session_uid === sessionUid;
+    const isSourceSession = row.source_session_uid === sessionUid;
+    const isClosed = closedInboxStatuses.includes(row.status);
+    const hasRecoveryCapability =
+      actorCapabilities.handoffRecovery === true || actorCapabilities.admin === true;
+    const canRecover = !isClosed && (isSourceSession || hasRecoveryCapability);
+
+    return {
+      handoff: this.mapRow(row),
+      actingSessionUid: sessionUid,
+      actions: [
+        this.actionAffordance({
+          kind: "claim",
+          toolName: "vault_collab_claim_handoff",
+          enabled: row.status === "available" && row.claimed_by_session_uid === null,
+          reason: this.claimActionReason(row)
+        }),
+        this.actionAffordance({
+          kind: "update",
+          toolName: "vault_collab_update_handoff",
+          requiresProgressNote: true,
+          enabled: !isClosed && isClaimOwner,
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "update")
+        }),
+        this.actionAffordance({
+          kind: "request_user_confirmation",
+          toolName: "vault_collab_request_user_confirmation",
+          requiresQuestion: true,
+          enabled: !isClosed && isClaimOwner,
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "request user confirmation")
+        }),
+        this.actionAffordance({
+          kind: "request_handoff_permission",
+          toolName: "vault_collab_request_handoff_permission",
+          requiresQuestion: true,
+          enabled: !isClosed && isClaimOwner,
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "request handoff permission")
+        }),
+        this.actionAffordance({
+          kind: "release",
+          toolName: "vault_collab_release_handoff",
+          enabled: !isClosed && isClaimOwner,
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "release")
+        }),
+        this.actionAffordance({
+          kind: "resolve",
+          toolName: "vault_collab_resolve_handoff",
+          requiresSummary: true,
+          enabled: !isClosed && isClaimOwner,
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "resolve")
+        }),
+        this.actionAffordance({
+          kind: "recover",
+          toolName: "vault_collab_recover_handoff",
+          requiredCapability: isSourceSession ? null : "handoffRecovery",
+          requiresReason: true,
+          requiresSummary: true,
+          requiresEvidenceVaultMemoryUid: true,
+          enabled: canRecover,
+          reason: this.recoverActionReason(row, isSourceSession, hasRecoveryCapability)
+        }),
+        this.actionAffordance({
+          kind: "reopen",
+          toolName: "vault_collab_reopen_handoff",
+          requiresOwnerToken: false,
+          requiresReason: true,
+          enabled: isClosed,
+          reason: isClosed
+            ? "Closed handoff can be reopened as recoverable work."
+            : `Handoff must be closed to reopen; current status is ${row.status}.`
+        })
+      ]
+    };
+  }
+
   linkVaultMemory(
     handoffUid: string,
     vaultMemoryUid: string,
@@ -367,11 +458,23 @@ export class HandoffService {
         .prepare(
           `
           UPDATE sessions
-          SET current_handoff_uid = ?, updated_at = ?
+          SET current_handoff_uid = ?,
+              status = ?,
+              status_detail = ?,
+              updated_at = ?
           WHERE session_uid = ?
+            AND status NOT IN (?, ?)
         `
         )
-        .run(handoffUid, now, sessionUid);
+        .run(
+          handoffUid,
+          "working",
+          `Claimed handoff ${handoffUid}.`,
+          now,
+          sessionUid,
+          "complete",
+          "disconnected"
+        );
     });
 
     claim();
@@ -408,6 +511,12 @@ export class HandoffService {
       `
       )
       .run(status, progressNote, now, handoffUid);
+    this.updateSessionWorkState(
+      sessionUid,
+      this.sessionStatusForHandoffStatus(status),
+      progressNote,
+      now
+    );
 
     this.events.recordEvent({
       eventType: "handoff.updated",
@@ -440,6 +549,7 @@ export class HandoffService {
       `
       )
       .run("awaiting_user", question, now, handoffUid);
+    this.updateSessionWorkState(sessionUid, "awaiting_user", question, now);
 
     this.events.recordEvent({
       eventType: "handoff.user_confirmation_requested",
@@ -472,6 +582,7 @@ export class HandoffService {
       `
       )
       .run("awaiting_user", input.question, now, handoffUid);
+    this.updateSessionWorkState(sessionUid, "awaiting_user", input.question, now);
 
     this.events.recordEvent({
       eventType: "handoff.permission_requested",
@@ -513,12 +624,16 @@ export class HandoffService {
         .prepare(
           `
           UPDATE sessions
-          SET current_handoff_uid = NULL, updated_at = ?
+          SET current_handoff_uid = NULL,
+              status = ?,
+              status_detail = NULL,
+              updated_at = ?
           WHERE session_uid = ?
             AND current_handoff_uid = ?
+            AND status NOT IN (?, ?)
         `
         )
-        .run(now, sessionUid, handoffUid);
+        .run("idle", now, sessionUid, handoffUid, "complete", "disconnected");
     });
 
     release();
@@ -560,12 +675,16 @@ export class HandoffService {
         .prepare(
           `
           UPDATE sessions
-          SET current_handoff_uid = NULL, updated_at = ?
+          SET current_handoff_uid = NULL,
+              status = ?,
+              status_detail = NULL,
+              updated_at = ?
           WHERE session_uid = ?
             AND current_handoff_uid = ?
+            AND status NOT IN (?, ?)
         `
         )
-        .run(now, sessionUid, handoffUid);
+        .run("idle", now, sessionUid, handoffUid, "complete", "disconnected");
     });
 
     resolve();
@@ -639,12 +758,16 @@ export class HandoffService {
           .prepare(
             `
             UPDATE sessions
-            SET current_handoff_uid = NULL, updated_at = ?
+            SET current_handoff_uid = NULL,
+                status = ?,
+                status_detail = NULL,
+                updated_at = ?
             WHERE session_uid = ?
               AND current_handoff_uid = ?
+              AND status NOT IN (?, ?)
           `
           )
-          .run(now, previousClaimedBySessionUid, handoffUid);
+          .run("idle", now, previousClaimedBySessionUid, handoffUid, "complete", "disconnected");
       }
     });
 
@@ -704,12 +827,16 @@ export class HandoffService {
           .prepare(
             `
             UPDATE sessions
-            SET current_handoff_uid = NULL, updated_at = ?
+            SET current_handoff_uid = NULL,
+                status = ?,
+                status_detail = NULL,
+                updated_at = ?
             WHERE session_uid = ?
               AND current_handoff_uid = ?
+              AND status NOT IN (?, ?)
           `
           )
-          .run(now, current.claimedBySessionUid, handoffUid);
+          .run("idle", now, current.claimedBySessionUid, handoffUid, "complete", "disconnected");
       }
     });
 
@@ -772,6 +899,121 @@ export class HandoffService {
     if (value.trim() === "") {
       throw new Error(`${label} cannot be empty`);
     }
+  }
+
+  private updateSessionWorkState(
+    sessionUid: string,
+    status: SessionStatus,
+    detail: string | null,
+    now: string
+  ): void {
+    this.db
+      .prepare(
+        `
+        UPDATE sessions
+        SET status = ?,
+            status_detail = ?,
+            updated_at = ?
+        WHERE session_uid = ?
+          AND status NOT IN (?, ?)
+      `
+      )
+      .run(status, detail, now, sessionUid, "complete", "disconnected");
+  }
+
+  private sessionStatusForHandoffStatus(status: HandoffStatus): SessionStatus {
+    switch (status) {
+      case "in_progress":
+        return "working";
+      case "blocked":
+        return "blocked";
+      case "awaiting_user":
+        return "awaiting_user";
+      case "verification_needed":
+        return "awaiting_verification";
+      default:
+        return "working";
+    }
+  }
+
+  private actionAffordance(input: {
+    kind: HandoffActionKind;
+    toolName: string;
+    enabled: boolean;
+    reason: string;
+    requiredCapability?: string | null;
+    requiresOwnerToken?: boolean;
+    requiresProgressNote?: boolean;
+    requiresQuestion?: boolean;
+    requiresReason?: boolean;
+    requiresSummary?: boolean;
+    requiresEvidenceVaultMemoryUid?: boolean;
+  }): HandoffActionAffordance {
+    return {
+      kind: input.kind,
+      enabled: input.enabled,
+      reason: input.reason,
+      toolName: input.toolName,
+      requiredCapability: input.requiredCapability ?? null,
+      requiresOwnerToken: input.requiresOwnerToken ?? true,
+      requiresProgressNote: input.requiresProgressNote ?? false,
+      requiresQuestion: input.requiresQuestion ?? false,
+      requiresReason: input.requiresReason ?? false,
+      requiresSummary: input.requiresSummary ?? false,
+      requiresEvidenceVaultMemoryUid: input.requiresEvidenceVaultMemoryUid ?? false
+    };
+  }
+
+  private claimActionReason(row: HandoffRow): string {
+    if (closedInboxStatuses.includes(row.status)) {
+      return `Handoff is closed: ${row.status}.`;
+    }
+
+    if (row.claimed_by_session_uid) {
+      return "Handoff is already claimed by the acting session.";
+    }
+
+    if (row.status !== "available") {
+      return `Handoff must be available to claim; current status is ${row.status}.`;
+    }
+
+    return "Acting session can claim this available handoff.";
+  }
+
+  private claimOwnerActionReason(
+    row: HandoffRow,
+    isClaimOwner: boolean,
+    action: string
+  ): string {
+    if (closedInboxStatuses.includes(row.status)) {
+      return `Cannot ${action} a closed handoff: ${row.status}.`;
+    }
+
+    if (!isClaimOwner) {
+      return `Handoff must be claimed by the acting session to ${action}.`;
+    }
+
+    return `Acting session can ${action} this handoff.`;
+  }
+
+  private recoverActionReason(
+    row: HandoffRow,
+    isSourceSession: boolean,
+    hasRecoveryCapability: boolean
+  ): string {
+    if (closedInboxStatuses.includes(row.status)) {
+      return `Cannot recover a closed handoff: ${row.status}.`;
+    }
+
+    if (isSourceSession) {
+      return "Source session can recover-resolve this handoff with evidence.";
+    }
+
+    if (hasRecoveryCapability) {
+      return "Recovery-capable session can recover-resolve this handoff with evidence.";
+    }
+
+    return "Recover resolve requires source session or handoffRecovery capability.";
   }
 
   private permissionRequestPayload(

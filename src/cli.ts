@@ -97,6 +97,7 @@ const commands = new Set([
   "link-vault-memory",
   "inbox",
   "handoff",
+  "handoff-actions",
   "handoff-metadata",
   "discussion-create",
   "discussion-add-message",
@@ -382,6 +383,13 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
 
     case "handoff":
       return services.handoffDetails.getHandoffDetail(requiredOption(parsed, "handoff-uid"));
+
+    case "handoff-actions":
+      return services.handoffs.getHandoffActions(
+        requiredOption(parsed, "handoff-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token")
+      );
 
     case "handoff-metadata":
       return services.handoffs.updateHandoffMetadata(

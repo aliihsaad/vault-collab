@@ -73,13 +73,13 @@ describe("AttentionService", () => {
       targetProject: "Vault Collab",
       sourceSessionUid: coordinator.sessionUid
     });
-    handoffs.claimHandoff(claimedHandoff.handoffUid, worker.sessionUid, worker.sessionToken);
 
     now = new Date("2026-05-29T14:01:00.000Z");
     sessions.pingSession(worker.sessionUid, {
       actorSessionUid: coordinator.sessionUid,
       message: "Check the discussion."
     });
+    handoffs.claimHandoff(claimedHandoff.handoffUid, worker.sessionUid, worker.sessionToken);
     sessions.requestSessionPermission(worker.sessionUid, worker.sessionToken, {
       question: "Allow local file read?",
       requestedCapability: "filesystem-read",

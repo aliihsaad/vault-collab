@@ -302,6 +302,108 @@ describe("HandoffService", () => {
     ).toThrow(/already claimed/i);
   });
 
+  it("describes owner-token-aware handoff actions for dashboards", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Render safe dashboard buttons",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      sourceSessionUid: codex.sessionUid
+    });
+
+    const availableActions = handoffs.getHandoffActions(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken
+    );
+
+    expect(availableActions).toMatchObject({
+      handoff: {
+        handoffUid: handoff.handoffUid,
+        status: "available"
+      },
+      actingSessionUid: claude.sessionUid
+    });
+    expect(availableActions.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "claim",
+          enabled: true,
+          toolName: "vault_collab_claim_handoff",
+          requiresOwnerToken: true
+        }),
+        expect.objectContaining({
+          kind: "release",
+          enabled: false,
+          reason: "Handoff must be claimed by the acting session to release."
+        })
+      ])
+    );
+    expect(JSON.stringify(availableActions)).not.toContain(claude.sessionToken);
+
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    const claimedActions = handoffs.getHandoffActions(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken
+    );
+
+    expect(claimedActions.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "claim",
+          enabled: false,
+          reason: "Handoff is already claimed by the acting session."
+        }),
+        expect.objectContaining({
+          kind: "update",
+          enabled: true,
+          toolName: "vault_collab_update_handoff",
+          requiresProgressNote: true
+        }),
+        expect.objectContaining({
+          kind: "resolve",
+          enabled: true,
+          toolName: "vault_collab_resolve_handoff",
+          requiresSummary: true
+        }),
+        expect.objectContaining({
+          kind: "release",
+          enabled: true,
+          toolName: "vault_collab_release_handoff"
+        })
+      ])
+    );
+
+    handoffs.resolveHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      "Dashboard contract verified."
+    );
+    const closedActions = handoffs.getHandoffActions(
+      handoff.handoffUid,
+      codex.sessionUid,
+      codex.sessionToken
+    );
+
+    expect(closedActions.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "claim",
+          enabled: false,
+          reason: "Handoff is closed: resolved."
+        }),
+        expect.objectContaining({
+          kind: "reopen",
+          enabled: true,
+          toolName: "vault_collab_reopen_handoff",
+          requiresReason: true,
+          requiresOwnerToken: false
+        })
+      ])
+    );
+  });
+
   it("requires the owning session token to claim and update handoffs", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Token check",
@@ -351,6 +453,66 @@ describe("HandoffService", () => {
     expect(handoffs.getHandoff(handoff.handoffUid)?.progressNote).toBe(
       "Writing the handoff service tests"
     );
+    expect(sessions.listSessions({ clientType: "claude-code" })[0]).toMatchObject({
+      status: "working",
+      statusDetail: "Writing the handoff service tests"
+    });
+  });
+
+  it("keeps the owning session status in sync with handoff lifecycle state", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Keep session state honest",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    expect(sessions.listSessions({ clientType: "claude-code" })[0]).toMatchObject({
+      status: "working",
+      statusDetail: `Claimed handoff ${handoff.handoffUid}.`
+    });
+
+    handoffs.updateHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      "blocked",
+      "Waiting for dashboard API support."
+    );
+    expect(sessions.listSessions({ clientType: "claude-code" })[0]).toMatchObject({
+      status: "blocked",
+      statusDetail: "Waiting for dashboard API support."
+    });
+
+    handoffs.requestUserConfirmation(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      "Continue with localhost-only implementation?"
+    );
+    expect(sessions.listSessions({ clientType: "claude-code" })[0]).toMatchObject({
+      status: "awaiting_user",
+      statusDetail: "Continue with localhost-only implementation?"
+    });
+
+    handoffs.updateHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      "verification_needed",
+      "Ready for operator verification."
+    );
+    expect(sessions.listSessions({ clientType: "claude-code" })[0]).toMatchObject({
+      status: "awaiting_verification",
+      statusDetail: "Ready for operator verification."
+    });
+
+    handoffs.releaseHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    expect(sessions.listSessions({ clientType: "claude-code" })[0]).toMatchObject({
+      status: "idle",
+      statusDetail: null,
+      currentHandoffUid: null
+    });
   });
 
   it("rejects terminal statuses through the generic progress update path", () => {
