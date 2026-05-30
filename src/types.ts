@@ -228,6 +228,7 @@ export type LaunchRequestStatus =
   | "cancelled"
   | "launching"
   | "running"
+  | "stopped"
   | "failed";
 
 export const launchRequestStatuses = [
@@ -237,6 +238,7 @@ export const launchRequestStatuses = [
   "cancelled",
   "launching",
   "running",
+  "stopped",
   "failed"
 ] as const satisfies readonly LaunchRequestStatus[];
 
@@ -305,6 +307,7 @@ export type LaunchRequestActionKind =
   | "cancel"
   | "mark_launching"
   | "mark_running"
+  | "stop"
   | "fail";
 
 export interface LaunchRequestActionAffordance {

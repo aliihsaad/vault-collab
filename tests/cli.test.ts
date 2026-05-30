@@ -1487,6 +1487,23 @@ describe("vault-collab CLI", () => {
         "Launched session registered."
       ])
     );
+    const stopped = parseJson<{ status: string; completedAt: string | null; metadata: Record<string, unknown> }>(
+      await runCli([
+        "launch-stop",
+        "--db",
+        dbPath,
+        "--launch-request-uid",
+        request.launchRequestUid,
+        "--session-uid",
+        broker.sessionUid,
+        "--session-token",
+        broker.sessionToken,
+        "--detail",
+        "Dashboard stopped the managed worker.",
+        "--exit-code",
+        "0"
+      ])
+    );
     const got = parseJson<{ status: string; sessionToken?: string }>(
       await runCli([
         "launch",
@@ -1513,16 +1530,29 @@ describe("vault-collab CLI", () => {
       status: "running",
       launchedSessionUid: launched.sessionUid
     });
-    expect(got.status).toBe("running");
+    expect(stopped).toMatchObject({
+      status: "stopped",
+      completedAt: expect.any(String),
+      metadata: {
+        source: "cli-test",
+        stopped: {
+          detail: "Dashboard stopped the managed worker.",
+          exitCode: 0,
+          brokerSessionUid: broker.sessionUid
+        }
+      }
+    });
+    expect(got.status).toBe("stopped");
     expect(detail.launchRequest).toMatchObject({
       launchRequestUid: request.launchRequestUid,
-      status: "running"
+      status: "stopped"
     });
     expect(detail.events.map((event) => event.eventType)).toEqual([
       "launch_request.requested",
       "launch_request.approved",
       "launch_request.launching",
-      "launch_request.running"
+      "launch_request.running",
+      "launch_request.stopped"
     ]);
     expect(JSON.stringify(got)).not.toContain(approver.sessionToken);
     expect(JSON.stringify(got)).not.toContain(broker.sessionToken);

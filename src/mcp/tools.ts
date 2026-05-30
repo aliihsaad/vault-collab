@@ -52,6 +52,7 @@ export const vaultCollabToolNames = [
   "vault_collab_cancel_launch_request",
   "vault_collab_mark_launch_request_launching",
   "vault_collab_mark_launch_request_running",
+  "vault_collab_mark_launch_request_stopped",
   "vault_collab_fail_launch_request",
   "vault_collab_list_agent_roles",
   "vault_collab_upsert_agent_profile",
@@ -406,6 +407,12 @@ const markLaunchRequestRunningInputSchema = ownedLaunchRequestInputSchema.extend
   launchedSessionUid: optionalStringSchema("Required if launched_session_uid is omitted. Registered launched session identifier."),
   launched_session_uid: optionalStringSchema("Snake_case alias for launchedSessionUid."),
   detail: optionalStringSchema("Optional running transition detail.")
+});
+
+const markLaunchRequestStoppedInputSchema = ownedLaunchRequestInputSchema.extend({
+  detail: optionalStringSchema("Optional stopped transition detail."),
+  exitCode: optionalNumberSchema("Optional worker process exit code."),
+  exit_code: optionalNumberSchema("Snake_case alias for exitCode.")
 });
 
 const failLaunchRequestInputSchema = ownedLaunchRequestInputSchema.extend({
@@ -765,6 +772,13 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     description:
       "Attach an already registered launched session to a launching request when the actor has launchBroker capability.",
     inputSchema: markLaunchRequestRunningInputSchema
+  },
+  {
+    name: "vault_collab_mark_launch_request_stopped",
+    title: "Mark Launch Request Stopped",
+    description:
+      "Mark a launching or running launch request stopped after a managed worker exits normally or by user stop.",
+    inputSchema: markLaunchRequestStoppedInputSchema
   },
   {
     name: "vault_collab_fail_launch_request",
@@ -1144,6 +1158,14 @@ export function createVaultCollabMcpTools(
         requiredString(args, "sessionToken", "session_token"),
         requiredString(args, "launchedSessionUid", "launched_session_uid"),
         optionalString(args, "detail") ?? null
+      ),
+    vault_collab_mark_launch_request_stopped: (args) =>
+      launchRequests.markLaunchRequestStopped(
+        requiredString(args, "launchRequestUid", "launch_request_uid"),
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        optionalString(args, "detail") ?? null,
+        optionalNumber(args, "exitCode", "exit_code") ?? null
       ),
     vault_collab_fail_launch_request: (args) =>
       launchRequests.failLaunchRequest(

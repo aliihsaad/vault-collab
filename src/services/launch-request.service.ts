@@ -63,6 +63,7 @@ interface LaunchSessionRow {
 
 const launchableStatuses: LaunchRequestStatus[] = ["approved"];
 const cancellableStatuses: LaunchRequestStatus[] = ["requested", "approved"];
+const stoppableStatuses: LaunchRequestStatus[] = ["launching", "running"];
 const failableStatuses: LaunchRequestStatus[] = ["approved", "launching", "running"];
 
 export class LaunchRequestService {
@@ -302,6 +303,15 @@ export class LaunchRequestService {
           reason: this.runningActionReason(row, hasLaunchBroker, isSameBroker)
         }),
         this.actionAffordance({
+          kind: "stop",
+          toolName: "vault_collab_mark_launch_request_stopped",
+          requiredCapability: "launchBroker",
+          requiresReason: false,
+          requiresLaunchedSessionUid: false,
+          enabled: stoppableStatuses.includes(row.status) && hasLaunchBroker && isSameBroker,
+          reason: this.stopActionReason(row, hasLaunchBroker, isSameBroker)
+        }),
+        this.actionAffordance({
           kind: "fail",
           toolName: "vault_collab_fail_launch_request",
           requiredCapability: "launchBroker",
@@ -485,6 +495,57 @@ export class LaunchRequestService {
     this.recordLifecycleEvent("launch_request.running", launchRequestUid, sessionUid, {
       detail,
       launchedSessionUid
+    });
+    return this.requireLaunchRequest(launchRequestUid);
+  }
+
+  markLaunchRequestStopped(
+    launchRequestUid: string,
+    sessionUid: string,
+    sessionToken: string,
+    detail: string | null = null,
+    exitCode: number | null = null
+  ): LaunchRequestRecord {
+    this.assertSessionCapability(sessionUid, sessionToken, "launchBroker");
+    const current = this.requireMutableLaunchRequest(launchRequestUid, stoppableStatuses, "stop");
+    this.assertSameBroker(current, sessionUid);
+    const now = this.now();
+    const metadata = JSON.parse(current.metadata_json) as JsonRecord;
+
+    this.db
+      .prepare(
+        `
+        UPDATE launch_requests
+        SET status = ?,
+            status_detail = ?,
+            broker_session_uid = COALESCE(broker_session_uid, ?),
+            metadata_json = ?,
+            updated_at = ?,
+            completed_at = ?
+        WHERE launch_request_uid = ?
+      `
+      )
+      .run(
+        "stopped",
+        detail,
+        sessionUid,
+        JSON.stringify({
+          ...metadata,
+          stopped: {
+            detail,
+            exitCode,
+            brokerSessionUid: sessionUid,
+            stoppedAt: now
+          }
+        }),
+        now,
+        now,
+        current.launch_request_uid
+      );
+
+    this.recordLifecycleEvent("launch_request.stopped", launchRequestUid, sessionUid, {
+      detail,
+      exitCode
     });
     return this.requireLaunchRequest(launchRequestUid);
   }
@@ -738,6 +799,26 @@ export class LaunchRequestService {
     }
 
     return "Acting broker can mark this launch request failed with a reason.";
+  }
+
+  private stopActionReason(
+    row: LaunchRequestRow,
+    hasLaunchBroker: boolean,
+    isSameBroker: boolean
+  ): string {
+    if (!stoppableStatuses.includes(row.status)) {
+      return `Launch request must be launching or running to stop; current status is ${row.status}`;
+    }
+
+    if (!hasLaunchBroker) {
+      return "Session requires launch broker capability.";
+    }
+
+    if (!isSameBroker) {
+      return "Launch request must be completed by the same broker session.";
+    }
+
+    return "Acting broker can mark this launch request stopped after the managed worker exits.";
   }
 
   private approvalSnapshot(row: LaunchRequestRow): JsonRecord {

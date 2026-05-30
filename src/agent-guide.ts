@@ -77,7 +77,7 @@ export function getAgentOperatingGuide(options: AgentGuideOptions = {}): AgentOp
       inspect: "vault_collab_get_handoff_detail, vault_collab_get_discussion_thread, vault_collab_list_events",
       coordinate: "vault_collab_create_handoff_discussion_thread, vault_collab_add_discussion_message, vault_collab_ping_session",
       work: "vault_collab_claim_handoff, vault_collab_update_session_state, vault_collab_update_handoff",
-      launch: "vault_collab_create_launch_request, vault_collab_approve_launch_request, vault_collab_mark_launch_request_launching, vault_collab_mark_launch_request_running",
+      launch: "vault_collab_create_launch_request, vault_collab_approve_launch_request, vault_collab_mark_launch_request_launching, vault_collab_mark_launch_request_running, vault_collab_mark_launch_request_stopped",
       permission: "vault_collab_request_session_permission, vault_collab_request_handoff_permission, vault_collab_request_user_confirmation",
       finish: "vault_collab_resolve_handoff, vault_collab_release_handoff, vault_collab_recover_handoff"
     }

@@ -109,6 +109,7 @@ const commands = new Set([
   "launch-cancel",
   "launch-mark-launching",
   "launch-mark-running",
+  "launch-stop",
   "launch-fail",
   "roles",
   "agent-upsert",
@@ -367,6 +368,15 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
         requiredOption(parsed, "session-token"),
         requiredOption(parsed, "launched-session-uid"),
         optionalOption(parsed, "detail") ?? null
+      );
+
+    case "launch-stop":
+      return services.launchRequests.markLaunchRequestStopped(
+        requiredOption(parsed, "launch-request-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        optionalOption(parsed, "detail") ?? null,
+        optionalNumberOption(parsed, "exit-code") ?? null
       );
 
     case "launch-fail":

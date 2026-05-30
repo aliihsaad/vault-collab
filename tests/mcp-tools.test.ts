@@ -74,6 +74,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_cancel_launch_request",
       "vault_collab_mark_launch_request_launching",
       "vault_collab_mark_launch_request_running",
+      "vault_collab_mark_launch_request_stopped",
       "vault_collab_fail_launch_request",
       "vault_collab_list_agent_roles",
       "vault_collab_upsert_agent_profile",
@@ -341,6 +342,28 @@ describe("Vault Collab MCP tools", () => {
       launchedSessionUid: launched.sessionUid
     });
 
+    const stopped = structured<{ status: string; completedAt: string | null; metadata: Record<string, unknown> }>(
+      await tools.callTool("vault_collab_mark_launch_request_stopped", {
+        launchRequestUid: request.launchRequestUid,
+        sessionUid: broker.sessionUid,
+        sessionToken: broker.sessionToken,
+        detail: "Worker exited after dashboard stop.",
+        exitCode: 0
+      })
+    );
+    expect(stopped).toMatchObject({
+      status: "stopped",
+      completedAt: expect.any(String),
+      metadata: {
+        source: "mcp-test",
+        stopped: {
+          detail: "Worker exited after dashboard stop.",
+          exitCode: 0,
+          brokerSessionUid: broker.sessionUid
+        }
+      }
+    });
+
     const got = structured<{ launchRequestUid: string; status: string }>(
       await tools.callTool("vault_collab_get_launch_request", {
         launchRequestUid: request.launchRequestUid
@@ -348,7 +371,7 @@ describe("Vault Collab MCP tools", () => {
     );
     expect(got).toMatchObject({
       launchRequestUid: request.launchRequestUid,
-      status: "running"
+      status: "stopped"
     });
     const detail = structured<{
       launchRequest: { launchRequestUid: string; status: string };
@@ -360,13 +383,14 @@ describe("Vault Collab MCP tools", () => {
     );
     expect(detail.launchRequest).toMatchObject({
       launchRequestUid: request.launchRequestUid,
-      status: "running"
+      status: "stopped"
     });
     expect(detail.events.map((event) => event.eventType)).toEqual([
       "launch_request.requested",
       "launch_request.approved",
       "launch_request.launching",
-      "launch_request.running"
+      "launch_request.running",
+      "launch_request.stopped"
     ]);
     expect(JSON.stringify(got)).not.toContain(approver.sessionToken);
     expect(JSON.stringify(got)).not.toContain(broker.sessionToken);

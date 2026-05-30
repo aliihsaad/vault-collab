@@ -263,8 +263,41 @@ describe("LaunchRequestService", () => {
       completedAt: null
     });
     expect(() =>
-      service.rejectLaunchRequest(
+      service.markLaunchRequestStopped(
         running.launchRequestUid,
+        secondBroker.sessionUid,
+        secondBroker.sessionToken,
+        "Backup broker should not stop another broker's launch.",
+        0
+      )
+    ).toThrow(/same broker/i);
+    now = new Date("2026-05-30T09:04:00.000Z");
+    const stopped = service.markLaunchRequestStopped(
+      running.launchRequestUid,
+      broker.sessionUid,
+      broker.sessionToken,
+      "User stopped the managed worker.",
+      0
+    );
+
+    expect(stopped).toMatchObject({
+      status: "stopped",
+      brokerSessionUid: broker.sessionUid,
+      launchedSessionUid: launched.sessionUid,
+      statusDetail: "User stopped the managed worker.",
+      completedAt: "2026-05-30T09:04:00.000Z",
+      metadata: {
+        stopped: {
+          detail: "User stopped the managed worker.",
+          exitCode: 0,
+          brokerSessionUid: broker.sessionUid,
+          stoppedAt: "2026-05-30T09:04:00.000Z"
+        }
+      }
+    });
+    expect(() =>
+      service.rejectLaunchRequest(
+        stopped.launchRequestUid,
         approver.sessionUid,
         approver.sessionToken,
         "Too late to reject."
@@ -334,6 +367,7 @@ describe("LaunchRequestService", () => {
       expect.arrayContaining([
         expect.objectContaining({ kind: "mark_launching", enabled: true }),
         expect.objectContaining({ kind: "mark_running", enabled: false }),
+        expect.objectContaining({ kind: "stop", enabled: false }),
         expect.objectContaining({ kind: "fail", enabled: true })
       ])
     );
@@ -362,9 +396,23 @@ describe("LaunchRequestService", () => {
         requiresLaunchedSessionUid: true
       })
     );
+    expect(sameBrokerActions.actions).toContainEqual(
+      expect.objectContaining({
+        kind: "stop",
+        enabled: true,
+        toolName: "vault_collab_mark_launch_request_stopped"
+      })
+    );
     expect(secondBrokerActions.actions).toContainEqual(
       expect.objectContaining({
         kind: "mark_running",
+        enabled: false,
+        reason: expect.stringMatching(/same broker/i)
+      })
+    );
+    expect(secondBrokerActions.actions).toContainEqual(
+      expect.objectContaining({
+        kind: "stop",
         enabled: false,
         reason: expect.stringMatching(/same broker/i)
       })
