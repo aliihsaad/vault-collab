@@ -220,7 +220,7 @@ describe("SessionService", () => {
     expect(() => service.pingSession("vc_sess_missing", {})).toThrow(/session not found/i);
   });
 
-  it("only records soft pings for idle sessions", () => {
+  it("records soft pings for active working sessions without interrupting state", () => {
     const target = service.registerSession({
       displayName: "Busy worker",
       clientType: "claude-code",
@@ -235,11 +235,38 @@ describe("SessionService", () => {
       "Already handling a handoff"
     );
 
+    const event = service.pingSession(target.sessionUid, {
+      message: "Please check another handoff."
+    });
+
+    expect(event).toMatchObject({
+      eventType: "session.pinged",
+      sessionUid: target.sessionUid,
+      payload: {
+        message: "Please check another handoff."
+      }
+    });
+    expect(service.getSession(target.sessionUid)).toMatchObject({
+      status: "working",
+      statusDetail: "Already handling a handoff"
+    });
+  });
+
+  it("does not ping terminal sessions", () => {
+    const target = service.registerSession({
+      displayName: "Closed worker",
+      clientType: "claude-code",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    service.updateSessionState(target.sessionUid, target.sessionToken, "complete", "Done.");
+
     expect(() =>
       service.pingSession(target.sessionUid, {
-        message: "Please check another handoff."
+        message: "This should not target closed sessions."
       })
-    ).toThrow(/only ping idle sessions/i);
+    ).toThrow(/cannot ping complete sessions/i);
     expect(events.listEvents({ sessionUid: target.sessionUid, eventType: "session.pinged" })).toEqual([]);
   });
 

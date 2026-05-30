@@ -176,8 +176,8 @@ export class SessionService {
       throw new Error(`Session not found: ${targetSessionUid}`);
     }
 
-    if (target.status !== "idle") {
-      throw new Error(`Can only ping idle sessions; current status is ${target.status}`);
+    if (target.status === "complete" || target.status === "disconnected") {
+      throw new Error(`Cannot ping ${target.status} sessions`);
     }
 
     const createdAt = this.now();

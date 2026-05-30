@@ -173,6 +173,43 @@ describe("AttentionService", () => {
     });
   });
 
+  it("surfaces non-interrupting pings while a session is working", () => {
+    sessions.updateSessionState(
+      worker.sessionUid,
+      worker.sessionToken,
+      "working",
+      "Implementing an active handoff"
+    );
+    const cursor = attention.getSessionAttention(worker.sessionUid).latestEventId;
+
+    now = new Date("2026-05-29T14:02:30.000Z");
+    sessions.pingSession(worker.sessionUid, {
+      actorSessionUid: coordinator.sessionUid,
+      message: "Operator note while working."
+    });
+
+    const feed = attention.getSessionAttention(worker.sessionUid, {
+      sinceEventId: cursor,
+      includeCurrentHandoffs: false
+    });
+
+    expect(feed.session).toMatchObject({
+      sessionUid: worker.sessionUid,
+      status: "working",
+      statusDetail: "Implementing an active handoff"
+    });
+    expect(feed.items).toEqual([
+      expect.objectContaining({
+        kind: "session_ping",
+        event: expect.objectContaining({
+          payload: expect.objectContaining({
+            message: "Operator note while working."
+          })
+        })
+      })
+    ]);
+  });
+
   it("surfaces session-targeted handoffs when the project label differs", () => {
     const lowercaseWorker = sessions.registerSession({
       displayName: "Lowercase Worker",

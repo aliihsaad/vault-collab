@@ -620,12 +620,17 @@ describe("Vault Collab MCP tools", () => {
       eventType: "session.pinged",
       sessionUid: worker.sessionUid
     });
-    const busyPing = await tools.callTool("vault_collab_ping_session", {
-      targetSessionUid: worker.sessionUid,
-      actorSessionUid: coordinator.sessionUid,
-      message: "This should not interrupt an awaiting_user session."
+    const busyPing = structured<{ eventType: string; sessionUid: string }>(
+      await tools.callTool("vault_collab_ping_session", {
+        targetSessionUid: worker.sessionUid,
+        actorSessionUid: coordinator.sessionUid,
+        message: "This should not interrupt an awaiting_user session."
+      })
+    );
+    expect(busyPing).toMatchObject({
+      eventType: "session.pinged",
+      sessionUid: worker.sessionUid
     });
-    expect(busyPing.isError).toBe(true);
     expect(awaitingSession).toMatchObject({
       status: "awaiting_user",
       statusDetail: "Allow filesystem write?"

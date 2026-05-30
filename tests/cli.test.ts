@@ -672,7 +672,7 @@ describe("vault-collab CLI", () => {
       eventType: "session.pinged",
       sessionUid: worker.sessionUid
     });
-    const busyPing = await runCli([
+    const busyPing = parseJson<{ eventType: string; sessionUid: string }>(await runCli([
       "ping-session",
       "--db",
       dbPath,
@@ -682,9 +682,11 @@ describe("vault-collab CLI", () => {
       coordinator.sessionUid,
       "--message",
       "This should not interrupt an awaiting_user session."
-    ]);
-    expect(busyPing.exitCode).toBe(1);
-    expect(busyPing.stderr).toMatch(/only ping idle sessions/i);
+    ]));
+    expect(busyPing).toMatchObject({
+      eventType: "session.pinged",
+      sessionUid: worker.sessionUid
+    });
     expect(awaitingSession).toMatchObject({
       status: "awaiting_user",
       statusDetail: "Allow filesystem write?"
