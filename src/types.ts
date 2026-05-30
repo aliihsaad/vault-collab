@@ -18,6 +18,19 @@ export type SessionStatus =
 
 export type JsonRecord = Record<string, unknown>;
 
+export type SessionDeliveryMode =
+  | "manual_poll"
+  | "local_watch"
+  | "mcp_notification"
+  | "managed_process";
+
+export interface SessionDeliveryState {
+  mode: SessionDeliveryMode;
+  wakeable: boolean;
+  lastAckEventId: number | null;
+  lastAckAt: string | null;
+}
+
 export type BuiltInAgentRole =
   | "coordinator"
   | "implementer"
@@ -74,6 +87,10 @@ export interface RegisterSessionInput {
   workspacePath: string;
   capabilities?: JsonRecord;
   agentUid?: string | null;
+  delivery?: {
+    mode?: SessionDeliveryMode;
+    wakeable?: boolean;
+  };
 }
 
 export interface SessionSnapshot {
@@ -90,6 +107,7 @@ export interface SessionSnapshot {
   agentDisplayName: string | null;
   agentRole: string | null;
   currentHandoffUid: string | null;
+  delivery: SessionDeliveryState;
   lastHeartbeatAt: string;
   createdAt: string;
   updatedAt: string;
@@ -109,6 +127,17 @@ export interface SessionFilters {
 export interface PingSessionInput {
   actorSessionUid?: string | null;
   message?: string | null;
+}
+
+export interface PingSessionResult {
+  event: EventRecord;
+  targetSession: SessionSnapshot;
+  delivery: {
+    mode: SessionDeliveryMode;
+    wakeable: boolean;
+    delivered: false;
+    nextStep: string;
+  };
 }
 
 export interface PermissionRequestInput {
@@ -135,6 +164,7 @@ export type AttentionItemKind =
   | "discussion_message"
   | "suggested_handoff"
   | "claimed_handoff"
+  | "claimed_by_other_handoff"
   | "available_handoff";
 
 export interface SessionAttentionOptions {
@@ -155,6 +185,40 @@ export interface SessionAttentionFeed {
   sinceEventId: number;
   latestEventId: number;
   items: SessionAttentionItem[];
+}
+
+export interface AttentionDeliveryBatch {
+  session: SessionSnapshot;
+  fromEventId: number;
+  toEventId: number;
+  items: SessionAttentionItem[];
+  message: string;
+}
+
+export interface AttentionDeliveryAdapterResult {
+  delivered: boolean;
+  message?: string | null;
+}
+
+export type AttentionDeliveryAttemptStatus = "delivered" | "failed";
+
+export interface AttentionDeliveryAttempt {
+  attemptUid: string;
+  sessionUid: string;
+  fromEventId: number;
+  toEventId: number;
+  deliveryMode: SessionDeliveryMode;
+  adapter: string;
+  status: AttentionDeliveryAttemptStatus;
+  message: string | null;
+  createdAt: string;
+  deliveredAt: string | null;
+  failedAt: string | null;
+}
+
+export interface AttentionDeliveryAttemptFilters {
+  sessionUid?: string;
+  status?: AttentionDeliveryAttemptStatus;
 }
 
 export type LaunchRequestStatus =

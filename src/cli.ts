@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import { getAgentOperatingGuide } from "./agent-guide.js";
-import { createCollabDatabase } from "./database/connection.js";
+import { createCollabDatabase, type CollabDatabase } from "./database/connection.js";
 import { withAttentionNextAction } from "./next-actions.js";
 import { AgentProfileService } from "./services/agent-profile.service.js";
 import { AttentionService } from "./services/attention.service.js";
@@ -10,6 +10,7 @@ import { EventService } from "./services/event.service.js";
 import { HandoffDetailService } from "./services/handoff-detail.service.js";
 import { HandoffService } from "./services/handoff.service.js";
 import { LaunchRequestService } from "./services/launch-request.service.js";
+import { AttentionReceiverService, type ReceiverAdapter } from "./services/attention-receiver.service.js";
 import { SessionService } from "./services/session.service.js";
 import { launchRequestStatuses, progressHandoffStatuses } from "./types.js";
 import type {
@@ -23,6 +24,9 @@ import type {
   LaunchRequestStatus,
   SessionAttentionFeed,
   SessionAttentionItem,
+  AttentionDeliveryAttemptStatus,
+  SessionDeliveryMode,
+  AttentionDeliveryAttempt,
   SessionStatus
 } from "./types.js";
 
@@ -38,6 +42,7 @@ interface ParsedCommand {
 }
 
 interface Services {
+  db: CollabDatabase;
   agents: AgentProfileService;
   sessions: SessionService;
   handoffs: HandoffService;
@@ -67,6 +72,16 @@ interface AttentionWatchResult {
   recommendedActions: RecommendedAttentionAction[];
 }
 
+interface AttentionReceiveResult {
+  timedOut: boolean;
+  elapsedMs: number;
+  intervalMs: number;
+  timeoutMs: number;
+  attempt: AttentionDeliveryAttempt | null;
+  deliveredMessage: string | null;
+  session: ReturnType<SessionService["getSession"]>;
+}
+
 const commands = new Set([
   "guide",
   "check",
@@ -74,10 +89,15 @@ const commands = new Set([
   "heartbeat",
   "sessions",
   "attention",
+  "attention-ack",
   "watch-attention",
+  "receive-attention",
+  "delivery-attempts",
   "state",
   "ping-session",
   "session-permission-request",
+  "session-rename",
+  "session-close",
   "disconnect",
   "launch-create",
   "launches",
@@ -106,6 +126,7 @@ const commands = new Set([
   "events",
   "claim",
   "update",
+  "user-confirmation-request",
   "handoff-permission-request",
   "resolve",
   "recover",
@@ -171,7 +192,11 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
           project: requiredOption(parsed, "project"),
           workspacePath: requiredOption(parsed, "workspace-path"),
           agentUid: optionalOption(parsed, "agent-uid") ?? null,
-          capabilities: parseCapabilities(parsed.options.get("capability") ?? [])
+          capabilities: parseCapabilities(parsed.options.get("capability") ?? []),
+          delivery: {
+            mode: optionalSessionDeliveryMode(parsed, "delivery-mode") ?? "manual_poll",
+            wakeable: parsed.options.has("wakeable")
+          }
         })
       );
 
@@ -194,8 +219,24 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
         includeCurrentHandoffs: !parsed.options.has("no-current-handoffs")
       });
 
+    case "attention-ack":
+      return services.sessions.acknowledgeAttention(
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        requiredNumberOption(parsed, "latest-event-id")
+      );
+
     case "watch-attention":
       return watchAttention(parsed, services);
+
+    case "receive-attention":
+      return receiveAttention(parsed, services);
+
+    case "delivery-attempts":
+      return createAttentionReceiver(services).listDeliveryAttempts({
+        sessionUid: optionalOption(parsed, "session-uid"),
+        status: optionalAttentionDeliveryAttemptStatus(parsed, "status")
+      });
 
     case "state":
       return services.sessions.updateSessionState(
@@ -221,6 +262,21 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
           commandPreview: optionalOption(parsed, "command-preview") ?? null,
           source: optionalOption(parsed, "source") ?? null
         }
+      );
+
+    case "session-rename":
+      return services.sessions.renameSession(
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        requiredOption(parsed, "display-name")
+      );
+
+    case "session-close":
+      return services.sessions.closeSession(
+        requiredOption(parsed, "target-session-uid"),
+        requiredOption(parsed, "actor-session-uid"),
+        requiredOption(parsed, "actor-session-token"),
+        optionalOption(parsed, "reason") ?? null
       );
 
     case "disconnect":
@@ -458,6 +514,14 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
         requiredOption(parsed, "progress-note")
       );
 
+    case "user-confirmation-request":
+      return services.handoffs.requestUserConfirmation(
+        requiredOption(parsed, "handoff-uid"),
+        requiredOption(parsed, "session-uid"),
+        requiredOption(parsed, "session-token"),
+        requiredOption(parsed, "question")
+      );
+
     case "handoff-permission-request":
       return services.handoffs.requestHandoffPermission(
         requiredOption(parsed, "handoff-uid"),
@@ -511,6 +575,7 @@ function createServices(dbPath: string): Services {
   const attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);
 
   return {
+    db,
     agents,
     sessions,
     handoffs,
@@ -568,6 +633,83 @@ async function watchAttention(
   };
 }
 
+async function receiveAttention(
+  parsed: ParsedCommand,
+  services: Services
+): Promise<AttentionReceiveResult> {
+  const sessionUid = requiredOption(parsed, "session-uid");
+  const sessionToken = requiredOption(parsed, "session-token");
+  const intervalMs = optionalNumberOption(parsed, "interval-ms") ?? 2000;
+  const timeoutMs = optionalNumberOption(parsed, "timeout-ms") ?? 30_000;
+
+  if (intervalMs <= 0) {
+    throw new Error("--interval-ms must be greater than 0");
+  }
+
+  if (timeoutMs < 0) {
+    throw new Error("--timeout-ms must be 0 or greater");
+  }
+
+  let deliveredMessage: string | null = null;
+  const adapter: ReceiverAdapter = {
+    name: "stdout",
+    canDeliver: () => true,
+    deliver: async (batch) => {
+      deliveredMessage = batch.message;
+      return {
+        delivered: true,
+        message: "Delivered to stdout adapter."
+      };
+    }
+  };
+  const receiver = createAttentionReceiver(services, adapter);
+
+  const startedAt = Date.now();
+  let attempt: AttentionDeliveryAttempt | null = null;
+
+  while (Date.now() - startedAt <= timeoutMs) {
+    attempt = await receiver.deliverOnce(sessionUid, sessionToken);
+    if (attempt.status === "delivered") {
+      break;
+    }
+
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(intervalMs, remainingMs));
+  }
+
+  return {
+    timedOut: attempt?.status !== "delivered",
+    elapsedMs: Date.now() - startedAt,
+    intervalMs,
+    timeoutMs,
+    attempt,
+    deliveredMessage,
+    session: services.sessions.getSession(sessionUid)
+  };
+}
+
+function createAttentionReceiver(
+  services: Services,
+  adapter: ReceiverAdapter = {
+    name: "reader",
+    canDeliver: () => false,
+    deliver: async () => ({
+      delivered: false,
+      message: "Reader adapter cannot deliver."
+    })
+  }
+): AttentionReceiverService {
+  return new AttentionReceiverService(
+    services.db,
+    services.sessions,
+    services.attention,
+    adapter
+  );
+}
+
 function recommendedAttentionActions(
   attention: SessionAttentionFeed,
   dbPath: string
@@ -620,6 +762,16 @@ function recommendedAttentionAction(
       handoffUid: item.handoff.handoffUid,
       command: `vault-collab handoff --db ${dbPath} --handoff-uid ${item.handoff.handoffUid}`,
       reason: "Session already owns this handoff; inspect detail and continue, update, resolve, or release."
+    };
+  }
+
+  if (item.kind === "claimed_by_other_handoff" && item.handoff) {
+    return {
+      kind: "inspect_claimed_by_other_handoff",
+      handoffUid: item.handoff.handoffUid,
+      command: `vault-collab handoff --db ${dbPath} --handoff-uid ${item.handoff.handoffUid}`,
+      reason:
+        "This handoff was suggested to the session, but another session claimed it; inspect detail before coordinating reassignment or follow-up."
     };
   }
 
@@ -743,6 +895,15 @@ function optionalNumberOption(parsed: ParsedCommand, name: string): number | und
   }
 
   return parsedNumber;
+}
+
+function requiredNumberOption(parsed: ParsedCommand, name: string): number {
+  const value = optionalNumberOption(parsed, name);
+  if (value === undefined) {
+    throw new Error(`Missing required option --${name}`);
+  }
+
+  return value;
 }
 
 function parseCapabilities(values: string[]): JsonRecord {
@@ -913,6 +1074,45 @@ function parseAgentProfileStatus(value: string): AgentProfileStatus {
   }
 
   return value as AgentProfileStatus;
+}
+
+function optionalSessionDeliveryMode(
+  parsed: ParsedCommand,
+  name: string
+): SessionDeliveryMode | undefined {
+  const value = optionalOption(parsed, name);
+  if (!value) {
+    return undefined;
+  }
+
+  const allowed: SessionDeliveryMode[] = [
+    "manual_poll",
+    "local_watch",
+    "mcp_notification",
+    "managed_process"
+  ];
+  if (!allowed.includes(value as SessionDeliveryMode)) {
+    throw new Error(`Invalid session delivery mode: ${value}`);
+  }
+
+  return value as SessionDeliveryMode;
+}
+
+function optionalAttentionDeliveryAttemptStatus(
+  parsed: ParsedCommand,
+  name: string
+): AttentionDeliveryAttemptStatus | undefined {
+  const value = optionalOption(parsed, name);
+  if (!value) {
+    return undefined;
+  }
+
+  const allowed: AttentionDeliveryAttemptStatus[] = ["delivered", "failed"];
+  if (!allowed.includes(value as AttentionDeliveryAttemptStatus)) {
+    throw new Error(`Invalid attention delivery attempt status: ${value}`);
+  }
+
+  return value as AttentionDeliveryAttemptStatus;
 }
 
 function optionDiscussionMessageType(parsed: ParsedCommand, name: string): DiscussionMessageType {

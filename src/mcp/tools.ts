@@ -10,11 +10,13 @@ import { EventService } from "../services/event.service.js";
 import { HandoffDetailService } from "../services/handoff-detail.service.js";
 import { HandoffService } from "../services/handoff.service.js";
 import { LaunchRequestService } from "../services/launch-request.service.js";
+import { AttentionReceiverService, type ReceiverAdapter } from "../services/attention-receiver.service.js";
 import { SessionService } from "../services/session.service.js";
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../services/vault-link.service.js";
 import { launchRequestStatuses, progressHandoffStatuses } from "../types.js";
 import type {
   AgentProfileStatus,
+  AttentionDeliveryAttemptStatus,
   ClientType,
   DiscussionMessageType,
   DiscussionThreadStatus,
@@ -22,6 +24,7 @@ import type {
   HandoffStatus,
   JsonRecord,
   LaunchRequestStatus,
+  SessionDeliveryMode,
   SessionStatus
 } from "../types.js";
 
@@ -29,11 +32,15 @@ export const vaultCollabToolNames = [
   "vault_collab_get_agent_guide",
   "vault_collab_register_session",
   "vault_collab_heartbeat_session",
+  "vault_collab_acknowledge_attention",
   "vault_collab_update_session_state",
   "vault_collab_ping_session",
   "vault_collab_request_session_permission",
   "vault_collab_list_sessions",
   "vault_collab_get_session_attention",
+  "vault_collab_list_attention_delivery_attempts",
+  "vault_collab_rename_session",
+  "vault_collab_close_session",
   "vault_collab_disconnect_session",
   "vault_collab_create_launch_request",
   "vault_collab_list_launch_requests",
@@ -167,6 +174,16 @@ const sessionStatusValues = [
   "complete",
   "disconnected"
 ] as const satisfies readonly SessionStatus[];
+const sessionDeliveryModeValues = [
+  "manual_poll",
+  "local_watch",
+  "mcp_notification",
+  "managed_process"
+] as const satisfies readonly SessionDeliveryMode[];
+const attentionDeliveryAttemptStatusValues = [
+  "delivered",
+  "failed"
+] as const satisfies readonly AttentionDeliveryAttemptStatus[];
 const handoffStatusValues = [
   "available",
   "claimed",
@@ -201,6 +218,8 @@ const discussionMessageTypeValues = [
 
 const clientTypeSchema = z.enum(clientTypeValues);
 const sessionStatusSchema = z.enum(sessionStatusValues);
+const sessionDeliveryModeSchema = z.enum(sessionDeliveryModeValues);
+const attentionDeliveryAttemptStatusSchema = z.enum(attentionDeliveryAttemptStatusValues);
 const handoffStatusSchema = z.enum(handoffStatusValues);
 const progressHandoffStatusSchema = z.enum(progressHandoffStatuses);
 const handoffPrioritySchema = z.enum(handoffPriorityValues);
@@ -245,6 +264,10 @@ const registerSessionInputSchema = z.object({
   workspace_path: optionalStringSchema("Snake_case alias for workspacePath."),
   agentUid: optionalStringSchema("Optional durable agent profile identifier."),
   agent_uid: optionalStringSchema("Snake_case alias for agentUid."),
+  deliveryMode: sessionDeliveryModeSchema.describe("Optional attention delivery mode.").optional(),
+  delivery_mode: sessionDeliveryModeSchema.describe("Snake_case alias for deliveryMode.").optional(),
+  deliveryWakeable: optionalBooleanSchema("Whether this session has a verified wake/delivery path."),
+  delivery_wakeable: optionalBooleanSchema("Snake_case alias for deliveryWakeable."),
   capabilities: z.record(z.unknown()).describe("Optional provider-neutral capability flags.").optional()
 });
 
@@ -253,6 +276,11 @@ const ownedSessionInputSchema = z.object({
   session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
   sessionToken: optionalStringSchema("Required if session_token is omitted. Private owner token."),
   session_token: optionalStringSchema("Snake_case alias for sessionToken.")
+});
+
+const acknowledgeAttentionInputSchema = ownedSessionInputSchema.extend({
+  latestEventId: optionalNumberSchema("Required if latest_event_id is omitted. Latest attention event id observed by the receiver."),
+  latest_event_id: optionalNumberSchema("Snake_case alias for latestEventId.")
 });
 
 const updateSessionStateInputSchema = ownedSessionInputSchema.extend({
@@ -279,6 +307,21 @@ const permissionRequestInputSchema = ownedSessionInputSchema.extend({
   source: optionalStringSchema("Optional client/source label.")
 });
 
+const renameSessionInputSchema = ownedSessionInputSchema.extend({
+  displayName: optionalStringSchema("Required if display_name is omitted. Replacement session display name."),
+  display_name: optionalStringSchema("Snake_case alias for displayName.")
+});
+
+const closeSessionInputSchema = z.object({
+  targetSessionUid: optionalStringSchema("Required if target_session_uid is omitted. Session to mark disconnected."),
+  target_session_uid: optionalStringSchema("Snake_case alias for targetSessionUid."),
+  actorSessionUid: optionalStringSchema("Required if actor_session_uid is omitted. Acting session identifier."),
+  actor_session_uid: optionalStringSchema("Snake_case alias for actorSessionUid."),
+  actorSessionToken: optionalStringSchema("Required if actor_session_token is omitted. Acting session owner token."),
+  actor_session_token: optionalStringSchema("Snake_case alias for actorSessionToken."),
+  reason: optionalStringSchema("Optional roster close reason.")
+});
+
 const listSessionsInputSchema = z.object({
   project: optionalStringSchema("Optional project filter."),
   clientType: clientTypeSchema.describe("Optional client type filter.").optional(),
@@ -293,6 +336,12 @@ const getSessionAttentionInputSchema = z.object({
   since_event_id: optionalNumberSchema("Snake_case alias for sinceEventId."),
   includeCurrentHandoffs: optionalBooleanSchema("Include current claimed/suggested/available handoffs."),
   include_current_handoffs: optionalBooleanSchema("Snake_case alias for includeCurrentHandoffs.")
+});
+
+const listAttentionDeliveryAttemptsInputSchema = z.object({
+  sessionUid: optionalStringSchema("Optional session identifier filter."),
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
+  status: attentionDeliveryAttemptStatusSchema.describe("Optional delivery attempt status filter.").optional()
 });
 
 const createLaunchRequestInputSchema = ownedSessionInputSchema.extend({
@@ -592,6 +641,12 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: ownedSessionInputSchema
   },
   {
+    name: "vault_collab_acknowledge_attention",
+    title: "Acknowledge Attention",
+    description: "Record the latest attention event observed by the owning session receiver.",
+    inputSchema: acknowledgeAttentionInputSchema
+  },
+  {
     name: "vault_collab_update_session_state",
     title: "Update Session State",
     description: "Update a session status and detail when the caller presents the owner token.",
@@ -601,7 +656,7 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     name: "vault_collab_ping_session",
     title: "Ping Session",
     description:
-      "Record a soft attention ping for an idle session without waking, interrupting, or auto-claiming.",
+      "Record a soft attention ping for a non-terminal session without waking, interrupting, or auto-claiming.",
     inputSchema: pingSessionInputSchema
   },
   {
@@ -621,6 +676,25 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     title: "Get Session Attention",
     description: "Read a token-safe attention feed for an active session without claiming or executing work.",
     inputSchema: getSessionAttentionInputSchema
+  },
+  {
+    name: "vault_collab_list_attention_delivery_attempts",
+    title: "List Attention Delivery Attempts",
+    description: "List token-safe receiver delivery attempts for dashboard delivery history and failure reasons.",
+    inputSchema: listAttentionDeliveryAttemptsInputSchema
+  },
+  {
+    name: "vault_collab_rename_session",
+    title: "Rename Session",
+    description: "Rename a session when the caller presents that session's owner token.",
+    inputSchema: renameSessionInputSchema
+  },
+  {
+    name: "vault_collab_close_session",
+    title: "Close Session",
+    description:
+      "Mark a roster session disconnected as itself or as a sessionAdmin/admin actor; this does not kill external processes.",
+    inputSchema: closeSessionInputSchema
   },
   {
     name: "vault_collab_disconnect_session",
@@ -867,6 +941,20 @@ export function createVaultCollabMcpTools(
   const discussions = new DiscussionService(db, events, options.clock);
   const handoffDetails = new HandoffDetailService(handoffs, events, sessions, discussions);
   const attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);
+  const attentionReceiver = new AttentionReceiverService(
+    db,
+    sessions,
+    attention,
+    {
+      name: "reader",
+      canDeliver: () => false,
+      deliver: async () => ({
+        delivered: false,
+        message: "Reader adapter cannot deliver."
+      })
+    },
+    options.clock
+  );
   const linkedHandoffs = options.vaultMemoryClient
     ? new VaultLinkedHandoffService(handoffs, options.vaultMemoryClient)
     : null;
@@ -897,7 +985,13 @@ export function createVaultCollabMcpTools(
         project: requiredString(args, "project"),
         workspacePath: requiredString(args, "workspacePath", "workspace_path"),
         agentUid: optionalString(args, "agentUid", "agent_uid") ?? null,
-        capabilities: optionalRecord(args, "capabilities") ?? {}
+        capabilities: optionalRecord(args, "capabilities") ?? {},
+        delivery: {
+          mode:
+            optionalSessionDeliveryMode(args, "deliveryMode", "delivery_mode") ?? "manual_poll",
+          wakeable:
+            optionalBoolean(args, "deliveryWakeable", "delivery_wakeable") ?? false
+        }
       });
       autoHeartbeats.start(registered.sessionUid, registered.sessionToken);
       return withAttentionNextAction(registered);
@@ -906,6 +1000,12 @@ export function createVaultCollabMcpTools(
       sessions.heartbeatSession(
         requiredString(args, "sessionUid", "session_uid"),
         requiredString(args, "sessionToken", "session_token")
+      ),
+    vault_collab_acknowledge_attention: (args) =>
+      sessions.acknowledgeAttention(
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        requiredNumber(args, "latestEventId", "latest_event_id")
       ),
     vault_collab_update_session_state: (args) =>
       sessions.updateSessionState(
@@ -943,6 +1043,24 @@ export function createVaultCollabMcpTools(
         includeCurrentHandoffs:
           optionalBoolean(args, "includeCurrentHandoffs", "include_current_handoffs") ?? true
       }),
+    vault_collab_list_attention_delivery_attempts: (args) =>
+      attentionReceiver.listDeliveryAttempts({
+        sessionUid: optionalString(args, "sessionUid", "session_uid"),
+        status: optionalAttentionDeliveryAttemptStatus(args, "status")
+      }),
+    vault_collab_rename_session: (args) =>
+      sessions.renameSession(
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        requiredString(args, "displayName", "display_name")
+      ),
+    vault_collab_close_session: (args) =>
+      sessions.closeSession(
+        requiredString(args, "targetSessionUid", "target_session_uid"),
+        requiredString(args, "actorSessionUid", "actor_session_uid"),
+        requiredString(args, "actorSessionToken", "actor_session_token"),
+        optionalString(args, "reason") ?? null
+      ),
     vault_collab_disconnect_session: (args) => {
       const sessionUid = requiredString(args, "sessionUid", "session_uid");
       const disconnected = sessions.disconnectSession(
@@ -1366,6 +1484,15 @@ function optionalNumber(args: Record<string, unknown>, ...keys: string[]): numbe
   return value;
 }
 
+function requiredNumber(args: Record<string, unknown>, ...keys: string[]): number {
+  const value = optionalNumber(args, ...keys);
+  if (value === undefined) {
+    throw new Error(`Missing required number: ${keys[0]}`);
+  }
+
+  return value;
+}
+
 function optionalStringArray(args: Record<string, unknown>, ...keys: string[]): string[] | undefined {
   const value = optionalValue(args, keys);
   if (value === undefined || value === null) {
@@ -1437,6 +1564,42 @@ function parseSessionStatus(value: string): SessionStatus {
   }
 
   return value as SessionStatus;
+}
+
+function optionalSessionDeliveryMode(
+  args: Record<string, unknown>,
+  ...keys: string[]
+): SessionDeliveryMode | undefined {
+  const value = optionalString(args, ...keys);
+  if (!value) {
+    return undefined;
+  }
+
+  if (!sessionDeliveryModeValues.includes(value as (typeof sessionDeliveryModeValues)[number])) {
+    throw new Error(`Invalid session delivery mode: ${value}`);
+  }
+
+  return value as SessionDeliveryMode;
+}
+
+function optionalAttentionDeliveryAttemptStatus(
+  args: Record<string, unknown>,
+  ...keys: string[]
+): AttentionDeliveryAttemptStatus | undefined {
+  const value = optionalString(args, ...keys);
+  if (!value) {
+    return undefined;
+  }
+
+  if (
+    !attentionDeliveryAttemptStatusValues.includes(
+      value as (typeof attentionDeliveryAttemptStatusValues)[number]
+    )
+  ) {
+    throw new Error(`Invalid attention delivery attempt status: ${value}`);
+  }
+
+  return value as AttentionDeliveryAttemptStatus;
 }
 
 function requiredHandoffStatus(args: Record<string, unknown>, ...keys: string[]): HandoffStatus {

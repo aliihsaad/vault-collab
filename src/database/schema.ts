@@ -15,6 +15,10 @@ export function applySchema(db: Database.Database): void {
       capabilities_json TEXT NOT NULL,
       agent_uid TEXT,
       current_handoff_uid TEXT,
+      delivery_mode TEXT NOT NULL DEFAULT 'manual_poll',
+      delivery_wakeable INTEGER NOT NULL DEFAULT 0,
+      delivery_last_ack_event_id INTEGER,
+      delivery_last_ack_at TEXT,
       session_token TEXT NOT NULL,
       last_heartbeat_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -133,6 +137,25 @@ export function applySchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_events_handoff_uid ON events(handoff_uid);
     CREATE INDEX IF NOT EXISTS idx_events_session_uid ON events(session_uid);
 
+    CREATE TABLE IF NOT EXISTS attention_delivery_attempts (
+      attempt_uid TEXT PRIMARY KEY,
+      session_uid TEXT NOT NULL,
+      from_event_id INTEGER NOT NULL,
+      to_event_id INTEGER NOT NULL,
+      delivery_mode TEXT NOT NULL,
+      adapter TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT,
+      created_at TEXT NOT NULL,
+      delivered_at TEXT,
+      failed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_attention_delivery_attempts_session
+      ON attention_delivery_attempts(session_uid);
+    CREATE INDEX IF NOT EXISTS idx_attention_delivery_attempts_status
+      ON attention_delivery_attempts(status);
+
     CREATE TABLE IF NOT EXISTS discussion_threads (
       thread_uid TEXT PRIMARY KEY,
       handoff_uid TEXT,
@@ -167,6 +190,10 @@ export function applySchema(db: Database.Database): void {
 
   addColumnIfMissing(db, "sessions", "project_key", "TEXT");
   addColumnIfMissing(db, "sessions", "agent_uid", "TEXT");
+  addColumnIfMissing(db, "sessions", "delivery_mode", "TEXT NOT NULL DEFAULT 'manual_poll'");
+  addColumnIfMissing(db, "sessions", "delivery_wakeable", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "sessions", "delivery_last_ack_event_id", "INTEGER");
+  addColumnIfMissing(db, "sessions", "delivery_last_ack_at", "TEXT");
   addColumnIfMissing(db, "agent_profiles", "project_key", "TEXT");
   addColumnIfMissing(db, "launch_requests", "command_preview", "TEXT");
   addColumnIfMissing(db, "launch_requests", "requested_capabilities_json", "TEXT NOT NULL DEFAULT '[]'");

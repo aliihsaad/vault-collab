@@ -106,7 +106,12 @@ export class AttentionService {
         if (handoff.claimedBySessionUid === sessionUid) {
           items.push(this.handoffItem("claimed_handoff", handoff));
         } else if (handoff.suggestedSessionUid === sessionUid) {
-          items.push(this.handoffItem("suggested_handoff", handoff));
+          items.push(
+            this.handoffItem(
+              handoff.claimedBySessionUid ? "claimed_by_other_handoff" : "suggested_handoff",
+              handoff
+            )
+          );
         } else if (
           handoff.status === "available" &&
           projectHandoffUids.has(handoff.handoffUid)
@@ -286,6 +291,7 @@ export class AttentionService {
       "session_ping",
       "discussion_message",
       "claimed_handoff",
+      "claimed_by_other_handoff",
       "suggested_handoff",
       "available_handoff"
     ].indexOf(kind);

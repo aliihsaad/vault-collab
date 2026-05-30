@@ -54,11 +54,15 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_get_agent_guide",
       "vault_collab_register_session",
       "vault_collab_heartbeat_session",
+      "vault_collab_acknowledge_attention",
       "vault_collab_update_session_state",
       "vault_collab_ping_session",
       "vault_collab_request_session_permission",
       "vault_collab_list_sessions",
       "vault_collab_get_session_attention",
+      "vault_collab_list_attention_delivery_attempts",
+      "vault_collab_rename_session",
+      "vault_collab_close_session",
       "vault_collab_disconnect_session",
       "vault_collab_create_launch_request",
       "vault_collab_list_launch_requests",
@@ -534,6 +538,176 @@ describe("Vault Collab MCP tools", () => {
     expect(events.map((event) => event.eventType)).toEqual(["session.registered"]);
   });
 
+  it("registers session delivery metadata through MCP fields", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const session = structured<{
+      delivery: {
+        mode: string;
+        wakeable: boolean;
+        lastAckEventId: number | null;
+        lastAckAt: string | null;
+      };
+    }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Watched Codex",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        deliveryMode: "local_watch",
+        deliveryWakeable: false
+      })
+    );
+
+    expect(session.delivery).toEqual({
+      mode: "local_watch",
+      wakeable: false,
+      lastAckEventId: null,
+      lastAckAt: null
+    });
+  });
+
+  it("acknowledges attention through MCP without leaking tokens", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const session = structured<{
+      sessionUid: string;
+      sessionToken: string;
+    }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Watched Codex",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        deliveryMode: "local_watch"
+      })
+    );
+
+    const acknowledged = structured<{
+      delivery: {
+        mode: string;
+        wakeable: boolean;
+        lastAckEventId: number | null;
+        lastAckAt: string | null;
+      };
+    }>(
+      await tools.callTool("vault_collab_acknowledge_attention", {
+        sessionUid: session.sessionUid,
+        sessionToken: session.sessionToken,
+        latestEventId: 42
+      })
+    );
+    const events = structured<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await tools.callTool("vault_collab_list_events", {
+        sessionUid: session.sessionUid
+      })
+    );
+
+    expect(acknowledged.delivery).toMatchObject({
+      mode: "local_watch",
+      wakeable: false,
+      lastAckEventId: 42
+    });
+    expect(events.map((event) => event.eventType)).toEqual([
+      "session.registered",
+      "session.attention_acknowledged"
+    ]);
+    expect(events.at(-1)?.payload).toMatchObject({
+      latestEventId: 42
+    });
+    expect(JSON.stringify(acknowledged)).not.toContain(session.sessionToken);
+    expect(JSON.stringify(events)).not.toContain(session.sessionToken);
+  });
+
+  it("renames and closes roster sessions through MCP without leaking tokens", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const admin = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Dashboard Admin",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        capabilities: {
+          sessionAdmin: true
+        }
+      })
+    );
+    const worker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Codex",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+
+    const renamed = structured<{ displayName: string; sessionToken?: string }>(
+      await tools.callTool("vault_collab_rename_session", {
+        sessionUid: worker.sessionUid,
+        sessionToken: worker.sessionToken,
+        displayName: "Codex Receiver - terminal 2"
+      })
+    );
+    const closed = structured<{ status: string; statusDetail: string; sessionToken?: string }>(
+      await tools.callTool("vault_collab_close_session", {
+        targetSessionUid: worker.sessionUid,
+        actorSessionUid: admin.sessionUid,
+        actorSessionToken: admin.sessionToken,
+        reason: "Closed from dashboard roster"
+      })
+    );
+
+    expect(renamed).toMatchObject({
+      displayName: "Codex Receiver - terminal 2"
+    });
+    expect(closed).toMatchObject({
+      status: "disconnected",
+      statusDetail: "Closed from dashboard roster"
+    });
+    expect(renamed).not.toHaveProperty("sessionToken");
+    expect(closed).not.toHaveProperty("sessionToken");
+    expect(JSON.stringify({ renamed, closed })).not.toContain(worker.sessionToken);
+    expect(JSON.stringify({ renamed, closed })).not.toContain(admin.sessionToken);
+  });
+
+  it("lists attention delivery attempts through MCP without leaking tokens", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const session = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Managed Receiver",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        deliveryMode: "managed_process",
+        deliveryWakeable: true
+      })
+    );
+    const acknowledged = structured<{ delivery: { lastAckEventId: number | null } }>(
+      await tools.callTool("vault_collab_acknowledge_attention", {
+        sessionUid: session.sessionUid,
+        sessionToken: session.sessionToken,
+        latestEventId: 42
+      })
+    );
+    expect(acknowledged.delivery.lastAckEventId).toBe(42);
+
+    const attempts = structured<Array<{ sessionUid: string; status: string }>>(
+      await tools.callTool("vault_collab_list_attention_delivery_attempts", {
+        sessionUid: session.sessionUid,
+        status: "delivered"
+      })
+    );
+
+    expect(attempts).toEqual([]);
+    expect(JSON.stringify(attempts)).not.toContain(session.sessionToken);
+  });
+
   it("records soft pings and permission requests through MCP without leaking tokens", async () => {
     const tools = createVaultCollabMcpTools({ dbPath });
     closeTools = tools.close;
@@ -554,7 +728,11 @@ describe("Vault Collab MCP tools", () => {
         workspacePath: cwd
       })
     );
-    const ping = structured<{ eventType: string; sessionUid: string }>(
+    const ping = structured<{
+      event: { eventType: string; sessionUid: string };
+      targetSession: { sessionUid: string; delivery: { mode: string; wakeable: boolean } };
+      delivery: { mode: string; wakeable: boolean; delivered: boolean; nextStep: string };
+    }>(
       await tools.callTool("vault_collab_ping_session", {
         targetSessionUid: worker.sessionUid,
         actorSessionUid: coordinator.sessionUid,
@@ -617,10 +795,27 @@ describe("Vault Collab MCP tools", () => {
     );
 
     expect(ping).toMatchObject({
-      eventType: "session.pinged",
-      sessionUid: worker.sessionUid
+      event: {
+        eventType: "session.pinged",
+        sessionUid: worker.sessionUid
+      },
+      targetSession: {
+        sessionUid: worker.sessionUid,
+        delivery: {
+          mode: "manual_poll",
+          wakeable: false
+        }
+      },
+      delivery: {
+        mode: "manual_poll",
+        wakeable: false,
+        delivered: false,
+        nextStep: "Target session must poll attention manually or run a watcher."
+      }
     });
-    const busyPing = structured<{ eventType: string; sessionUid: string }>(
+    expect(JSON.stringify(ping)).not.toContain(worker.sessionToken);
+    expect(JSON.stringify(ping)).not.toContain(coordinator.sessionToken);
+    const busyPing = structured<{ event: { eventType: string; sessionUid: string } }>(
       await tools.callTool("vault_collab_ping_session", {
         targetSessionUid: worker.sessionUid,
         actorSessionUid: coordinator.sessionUid,
@@ -628,8 +823,10 @@ describe("Vault Collab MCP tools", () => {
       })
     );
     expect(busyPing).toMatchObject({
-      eventType: "session.pinged",
-      sessionUid: worker.sessionUid
+      event: {
+        eventType: "session.pinged",
+        sessionUid: worker.sessionUid
+      }
     });
     expect(awaitingSession).toMatchObject({
       status: "awaiting_user",

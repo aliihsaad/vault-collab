@@ -49,6 +49,7 @@ export function getAgentOperatingGuide(options: AgentGuideOptions = {}): AgentOp
       discussion_message: "A new message on a relevant handoff discussion. Read the thread before continuing.",
       suggested_handoff: "Work targeted to this session. Inspect detail first; claim only if idle and ready.",
       claimed_handoff: "Work already owned by this session. Continue, update, resolve, or release it.",
+      claimed_by_other_handoff: "Work targeted to this session that another session claimed. Inspect detail and coordinate before acting.",
       available_handoff: "Project work not currently claimed. Claim only when idle and appropriate."
     },
     safetyRules: [

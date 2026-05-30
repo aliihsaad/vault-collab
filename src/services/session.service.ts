@@ -8,8 +8,10 @@ import type {
   JsonRecord,
   PermissionRequestInput,
   PingSessionInput,
+  PingSessionResult,
   RegisterSessionInput,
   RegisteredSession,
+  SessionDeliveryMode,
   SessionFilters,
   SessionSnapshot,
   SessionStatus
@@ -30,11 +32,21 @@ interface SessionRow {
   agent_display_name: string | null;
   agent_role: string | null;
   current_handoff_uid: string | null;
+  delivery_mode: SessionDeliveryMode;
+  delivery_wakeable: number;
+  delivery_last_ack_event_id: number | null;
+  delivery_last_ack_at: string | null;
   session_token: string;
   last_heartbeat_at: string;
   created_at: string;
   updated_at: string;
   disconnected_at: string | null;
+}
+
+interface SessionOwnerRow {
+  session_uid: string;
+  session_token: string;
+  capabilities_json: string;
 }
 
 export class SessionService {
@@ -48,6 +60,8 @@ export class SessionService {
     const now = this.now();
     const sessionUid = `vc_sess_${randomUUID()}`;
     const sessionToken = randomBytes(32).toString("base64url");
+    const deliveryMode = input.delivery?.mode ?? "manual_poll";
+    const deliveryWakeable = input.delivery?.wakeable === true ? 1 : 0;
 
     this.db
       .prepare(
@@ -64,13 +78,17 @@ export class SessionService {
           capabilities_json,
           agent_uid,
           current_handoff_uid,
+          delivery_mode,
+          delivery_wakeable,
+          delivery_last_ack_event_id,
+          delivery_last_ack_at,
           session_token,
           last_heartbeat_at,
           created_at,
           updated_at,
           disconnected_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -84,6 +102,10 @@ export class SessionService {
         null,
         JSON.stringify(input.capabilities ?? {}),
         input.agentUid ?? null,
+        null,
+        deliveryMode,
+        deliveryWakeable,
+        null,
         null,
         sessionToken,
         now,
@@ -110,6 +132,38 @@ export class SessionService {
 
   heartbeatSessionSilently(sessionUid: string, sessionToken: string): RegisteredSession {
     return this.updateHeartbeat(sessionUid, sessionToken, false);
+  }
+
+  acknowledgeAttention(
+    sessionUid: string,
+    sessionToken: string,
+    latestEventId: number
+  ): SessionSnapshot {
+    this.assertOwnedSession(sessionUid, sessionToken);
+    const acknowledgedAt = this.now();
+
+    this.db
+      .prepare(
+        `
+        UPDATE sessions
+        SET delivery_last_ack_event_id = ?,
+            delivery_last_ack_at = ?,
+            updated_at = ?
+        WHERE session_uid = ?
+      `
+      )
+      .run(latestEventId, acknowledgedAt, acknowledgedAt, sessionUid);
+
+    this.events.recordEvent({
+      eventType: "session.attention_acknowledged",
+      sessionUid,
+      payload: {
+        latestEventId,
+        acknowledgedAt
+      }
+    });
+
+    return this.requirePublicSession(sessionUid);
   }
 
   private updateHeartbeat(
@@ -170,7 +224,7 @@ export class SessionService {
     return this.requireSession(sessionUid);
   }
 
-  pingSession(targetSessionUid: string, input: PingSessionInput = {}): EventRecord {
+  pingSession(targetSessionUid: string, input: PingSessionInput = {}): PingSessionResult {
     const target = this.findSessionRow(targetSessionUid);
     if (!target) {
       throw new Error(`Session not found: ${targetSessionUid}`);
@@ -181,7 +235,7 @@ export class SessionService {
     }
 
     const createdAt = this.now();
-    return this.events.recordEvent({
+    const event = this.events.recordEvent({
       eventType: "session.pinged",
       sessionUid: targetSessionUid,
       payload: {
@@ -190,6 +244,12 @@ export class SessionService {
         createdAt
       }
     });
+
+    return {
+      event,
+      targetSession: this.mapPublicSession(target),
+      delivery: this.pingDeliveryState(target)
+    };
   }
 
   requestSessionPermission(
@@ -242,6 +302,77 @@ export class SessionService {
     });
 
     return this.requireSession(sessionUid);
+  }
+
+  renameSession(sessionUid: string, sessionToken: string, displayName: string): SessionSnapshot {
+    this.assertNonEmpty(displayName, "Session display name");
+    const current = this.assertOwnedSession(sessionUid, sessionToken);
+    const now = this.now();
+    const trimmedDisplayName = displayName.trim();
+
+    this.db
+      .prepare(
+        `
+        UPDATE sessions
+        SET display_name = ?, updated_at = ?
+        WHERE session_uid = ?
+      `
+      )
+      .run(trimmedDisplayName, now, sessionUid);
+
+    this.events.recordEvent({
+      eventType: "session.renamed",
+      sessionUid,
+      payload: {
+        previousDisplayName: current.display_name,
+        displayName: trimmedDisplayName
+      }
+    });
+
+    return this.requirePublicSession(sessionUid);
+  }
+
+  closeSession(
+    targetSessionUid: string,
+    actorSessionUid: string,
+    actorSessionToken: string,
+    reason: string | null = null
+  ): SessionSnapshot {
+    const actor = this.assertOwnedSession(actorSessionUid, actorSessionToken);
+    if (targetSessionUid !== actorSessionUid && !this.hasCapability(actor, "sessionAdmin")) {
+      throw new Error("Session requires session admin capability");
+    }
+
+    const target = this.findSessionRow(targetSessionUid);
+    if (!target) {
+      throw new Error(`Session not found: ${targetSessionUid}`);
+    }
+
+    const now = this.now();
+    const statusDetail = reason?.trim() ? reason.trim() : null;
+    this.db
+      .prepare(
+        `
+        UPDATE sessions
+        SET status = ?,
+            status_detail = ?,
+            updated_at = ?,
+            disconnected_at = ?
+        WHERE session_uid = ?
+      `
+      )
+      .run("disconnected", statusDetail, now, now, targetSessionUid);
+
+    this.events.recordEvent({
+      eventType: "session.disconnected",
+      sessionUid: targetSessionUid,
+      payload: {
+        actorSessionUid,
+        reason: statusDetail
+      }
+    });
+
+    return this.requirePublicSession(targetSessionUid);
   }
 
   listSessions(filter: SessionFilters = {}): SessionSnapshot[] {
@@ -297,6 +428,11 @@ export class SessionService {
     return row;
   }
 
+  private hasCapability(session: SessionOwnerRow, capability: string): boolean {
+    const capabilities = JSON.parse(session.capabilities_json) as Record<string, unknown>;
+    return capabilities[capability] === true || capabilities.admin === true;
+  }
+
   private assertNonEmpty(value: string, label: string): void {
     if (value.trim() === "") {
       throw new Error(`${label} cannot be empty`);
@@ -316,6 +452,33 @@ export class SessionService {
     };
   }
 
+  private pingDeliveryState(row: SessionRow): PingSessionResult["delivery"] {
+    if (row.delivery_mode === "manual_poll") {
+      return {
+        mode: row.delivery_mode,
+        wakeable: row.delivery_wakeable === 1,
+        delivered: false,
+        nextStep: "Target session must poll attention manually or run a watcher."
+      };
+    }
+
+    if (row.delivery_wakeable === 1) {
+      return {
+        mode: row.delivery_mode,
+        wakeable: true,
+        delivered: false,
+        nextStep: "Await receiver acknowledgement."
+      };
+    }
+
+    return {
+      mode: row.delivery_mode,
+      wakeable: false,
+      delivered: false,
+      nextStep: "Receiver is not verified; start a watcher or use a wakeable managed session."
+    };
+  }
+
   private requireSession(sessionUid: string): RegisteredSession {
     const row = this.findSessionRow(sessionUid);
     if (!row) {
@@ -323,6 +486,15 @@ export class SessionService {
     }
 
     return this.mapRegisteredSession(row);
+  }
+
+  private requirePublicSession(sessionUid: string): SessionSnapshot {
+    const session = this.getSession(sessionUid);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionUid}`);
+    }
+
+    return session;
   }
 
   private findSessionRow(sessionUid: string): SessionRow | undefined {
@@ -360,6 +532,12 @@ export class SessionService {
       agentDisplayName: row.agent_display_name,
       agentRole: row.agent_role,
       currentHandoffUid: row.current_handoff_uid,
+      delivery: {
+        mode: row.delivery_mode,
+        wakeable: row.delivery_wakeable === 1,
+        lastAckEventId: row.delivery_last_ack_event_id,
+        lastAckAt: row.delivery_last_ack_at
+      },
       lastHeartbeatAt: row.last_heartbeat_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -388,6 +566,10 @@ export class SessionService {
           agent_profiles.display_name AS agent_display_name,
           agent_profiles.role AS agent_role,
           sessions.current_handoff_uid,
+          sessions.delivery_mode,
+          sessions.delivery_wakeable,
+          sessions.delivery_last_ack_event_id,
+          sessions.delivery_last_ack_at,
           sessions.session_token,
           sessions.last_heartbeat_at,
           sessions.created_at,

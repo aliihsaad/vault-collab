@@ -34,6 +34,77 @@ has an old `lastHeartbeatAt`, show a stale-heartbeat badge and avoid treating it
 as confidently active, but keep the persisted status unchanged until a lifecycle
 mutation updates it.
 
+Roster actions:
+
+- Rename: call `vault_collab_rename_session` with the target session UID and
+  owner token. Use this to make repeated sessions distinguishable, for example
+  `Codex receiver - terminal 2` or `Claude reviewer - old window`.
+- Close from roster: call `vault_collab_close_session` with a target session UID
+  and an acting session UID/token. The actor can close itself, or close another
+  session only when it has `sessionAdmin` or `admin` capability. This marks the
+  session `disconnected`; it does not kill an external process.
+- Disconnect: `vault_collab_disconnect_session` remains the target-owner path
+  for a session to disconnect itself with its own token.
+
+Dashboards should expose close for stale/idle rows that are confusing the
+operator, but the button label should be `Close roster session` or `Mark
+disconnected`, not `Stop process`, unless the dashboard owns the process runtime.
+
+Delivery metadata is the dashboard's source of truth for ping wording:
+
+- `manual_poll`: show as manual attention only. Do not label ping as wake or
+  interrupt. After ping, show the returned next step: poll attention manually or
+  run a watcher.
+- `local_watch`: show that a local watcher may notice attention if one is
+  running, but it still cannot wake the model process by itself.
+- `mcp_notification`: show as wakeable only when `delivery.wakeable` is true;
+  otherwise treat it as advisory notification support.
+- `managed_process`: show as wakeable only when `delivery.wakeable` is true.
+  After ping, keep the item pending until a receiver acknowledges the latest
+  attention event.
+
+`vault_collab_ping_session` returns a token-safe envelope:
+
+```ts
+interface PingSessionResult {
+  event: EventRecord;
+  targetSession: SessionSnapshot;
+  delivery: {
+    mode: SessionDeliveryMode;
+    wakeable: boolean;
+    delivered: false;
+    nextStep: string;
+  };
+}
+```
+
+The dashboard should render `delivery.nextStep` instead of inferring that the
+target was woken. A later receiver acknowledgement updates
+`targetSession.delivery.lastAckEventId` and `lastAckAt`.
+
+Receiver delivery history is available through
+`vault_collab_list_attention_delivery_attempts`:
+
+```ts
+interface AttentionDeliveryAttempt {
+  attemptUid: string;
+  sessionUid: string;
+  fromEventId: number;
+  toEventId: number;
+  deliveryMode: SessionDeliveryMode;
+  adapter: string;
+  status: "delivered" | "failed";
+  message: string | null;
+  createdAt: string;
+  deliveredAt: string | null;
+  failedAt: string | null;
+}
+```
+
+Dashboards should use this history to show whether a ping was merely stored,
+successfully surfaced by a receiver, or failed with a reason. Filter by
+`sessionUid` for a session row and by `status` for failure panels.
+
 Handoff statuses `resolved`, `abandoned`, and `stale` are closed handoff states,
 not session states. Render them in history surfaces, not the live session roster.
 

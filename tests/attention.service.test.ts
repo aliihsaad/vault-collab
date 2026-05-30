@@ -210,6 +210,34 @@ describe("AttentionService", () => {
     ]);
   });
 
+  it("makes suggested handoffs claimed by another session explicit", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Targeted QA work",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      suggestedSessionUid: worker.sessionUid
+    });
+
+    handoffs.claimHandoff(handoff.handoffUid, coordinator.sessionUid, coordinator.sessionToken);
+
+    const feed = attention.getSessionAttention(worker.sessionUid);
+
+    expect(
+      feed.items.find(
+        (item) =>
+          item.kind === "claimed_by_other_handoff" &&
+          item.handoff?.handoffUid === handoff.handoffUid &&
+          item.handoff.claimedBySessionUid === coordinator.sessionUid
+      )
+    ).toBeDefined();
+    expect(
+      feed.items.find(
+        (item) =>
+          item.kind === "suggested_handoff" && item.handoff?.handoffUid === handoff.handoffUid
+      )
+    ).toBeUndefined();
+  });
+
   it("surfaces session-targeted handoffs when the project label differs", () => {
     const lowercaseWorker = sessions.registerSession({
       displayName: "Lowercase Worker",

@@ -68,6 +68,50 @@ describe("SessionService", () => {
     expect(sessions[0]).not.toHaveProperty("sessionToken");
   });
 
+  it("defaults manually registered sessions to manual polling delivery", () => {
+    const registered = service.registerSession({
+      displayName: "Manual Codex",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+
+    expect(registered.delivery).toEqual({
+      mode: "manual_poll",
+      wakeable: false,
+      lastAckEventId: null,
+      lastAckAt: null
+    });
+    expect(service.listSessions()[0]?.delivery).toEqual({
+      mode: "manual_poll",
+      wakeable: false,
+      lastAckEventId: null,
+      lastAckAt: null
+    });
+  });
+
+  it("persists declared managed process delivery metadata", () => {
+    const registered = service.registerSession({
+      displayName: "Managed Codex",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {},
+      delivery: {
+        mode: "managed_process",
+        wakeable: true
+      }
+    });
+
+    expect(service.requireSession(registered.sessionUid).delivery).toEqual({
+      mode: "managed_process",
+      wakeable: true,
+      lastAckEventId: null,
+      lastAckAt: null
+    });
+  });
+
   it("binds a session to a durable agent profile without leaking its token", () => {
     const agent = agents.upsertAgentProfile({
       stableName: "repo-coordinator",
@@ -153,6 +197,54 @@ describe("SessionService", () => {
     expect(events.map((event) => event.event_type)).toEqual(["session.registered"]);
   });
 
+  it("acknowledges attention with the owning session token", () => {
+    const registered = service.registerSession({
+      displayName: "Watched Codex",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {},
+      delivery: {
+        mode: "local_watch",
+        wakeable: false
+      }
+    });
+    now = new Date("2026-05-28T10:00:45.000Z");
+
+    const acknowledged = service.acknowledgeAttention(
+      registered.sessionUid,
+      registered.sessionToken,
+      42
+    );
+
+    expect(acknowledged.delivery).toEqual({
+      mode: "local_watch",
+      wakeable: false,
+      lastAckEventId: 42,
+      lastAckAt: "2026-05-28T10:00:45.000Z"
+    });
+    expect(acknowledged.updatedAt).toBe("2026-05-28T10:00:45.000Z");
+    expect(() =>
+      service.acknowledgeAttention(registered.sessionUid, "wrong-token", 43)
+    ).toThrow(/invalid session token/i);
+
+    const events = db
+      .prepare(
+        "SELECT event_type, payload_json FROM events WHERE session_uid = ? ORDER BY event_id ASC"
+      )
+      .all(registered.sessionUid) as Array<{ event_type: string; payload_json: string }>;
+
+    expect(events.map((event) => event.event_type)).toEqual([
+      "session.registered",
+      "session.attention_acknowledged"
+    ]);
+    expect(JSON.parse(events[1].payload_json)).toEqual({
+      latestEventId: 42,
+      acknowledgedAt: "2026-05-28T10:00:45.000Z"
+    });
+    expect(JSON.stringify(events)).not.toContain(registered.sessionToken);
+  });
+
   it("updates session state with status detail for the owning session", () => {
     const registered = service.registerSession({
       displayName: "Claude Desktop",
@@ -196,12 +288,12 @@ describe("SessionService", () => {
     });
     now = new Date("2026-05-28T10:01:30.000Z");
 
-    const event = service.pingSession(target.sessionUid, {
+    const result = service.pingSession(target.sessionUid, {
       actorSessionUid: actor.sessionUid,
       message: "Please check the inbox when active."
     });
 
-    expect(event).toMatchObject({
+    expect(result.event).toMatchObject({
       eventType: "session.pinged",
       sessionUid: target.sessionUid,
       payload: {
@@ -210,14 +302,61 @@ describe("SessionService", () => {
         createdAt: "2026-05-28T10:01:30.000Z"
       }
     });
+    expect(result.targetSession).toMatchObject({
+      sessionUid: target.sessionUid,
+      delivery: {
+        mode: "manual_poll",
+        wakeable: false,
+        lastAckEventId: null,
+        lastAckAt: null
+      }
+    });
+    expect(result.delivery).toEqual({
+      mode: "manual_poll",
+      wakeable: false,
+      delivered: false,
+      nextStep: "Target session must poll attention manually or run a watcher."
+    });
     expect(service.getSession(target.sessionUid)).toMatchObject({
       status: "idle",
       statusDetail: null
     });
     expect(events.listEvents({ sessionUid: target.sessionUid, eventType: "session.pinged" })).toEqual([
-      event
+      result.event
     ]);
+    expect(JSON.stringify(result)).not.toContain(target.sessionToken);
+    expect(JSON.stringify(result)).not.toContain(actor.sessionToken);
     expect(() => service.pingSession("vc_sess_missing", {})).toThrow(/session not found/i);
+  });
+
+  it("reports managed ping delivery as pending receiver acknowledgement", () => {
+    const target = service.registerSession({
+      displayName: "Managed worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {},
+      delivery: {
+        mode: "managed_process",
+        wakeable: true
+      }
+    });
+
+    const result = service.pingSession(target.sessionUid, {
+      message: "Please check the inbox."
+    });
+
+    expect(result.delivery).toEqual({
+      mode: "managed_process",
+      wakeable: true,
+      delivered: false,
+      nextStep: "Await receiver acknowledgement."
+    });
+    expect(result.targetSession.delivery).toMatchObject({
+      mode: "managed_process",
+      wakeable: true
+    });
+    expect(JSON.stringify(result)).not.toContain(target.sessionToken);
   });
 
   it("records soft pings for active working sessions without interrupting state", () => {
@@ -235,11 +374,11 @@ describe("SessionService", () => {
       "Already handling a handoff"
     );
 
-    const event = service.pingSession(target.sessionUid, {
+    const result = service.pingSession(target.sessionUid, {
       message: "Please check another handoff."
     });
 
-    expect(event).toMatchObject({
+    expect(result.event).toMatchObject({
       eventType: "session.pinged",
       sessionUid: target.sessionUid,
       payload: {
@@ -341,6 +480,106 @@ describe("SessionService", () => {
       status: "disconnected",
       disconnectedAt: "2026-05-28T10:02:00.000Z"
     });
+  });
+
+  it("renames a session with the owning session token", () => {
+    const registered = service.registerSession({
+      displayName: "Codex",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    now = new Date("2026-05-28T10:02:30.000Z");
+
+    const renamed = service.renameSession(
+      registered.sessionUid,
+      registered.sessionToken,
+      "Codex Receiver - terminal 2"
+    );
+
+    expect(renamed).toMatchObject({
+      sessionUid: registered.sessionUid,
+      displayName: "Codex Receiver - terminal 2",
+      updatedAt: "2026-05-28T10:02:30.000Z"
+    });
+    expect(renamed).not.toHaveProperty("sessionToken");
+    expect(service.listSessions()[0]).toMatchObject({
+      displayName: "Codex Receiver - terminal 2"
+    });
+    expect(() =>
+      service.renameSession(registered.sessionUid, "wrong-token", "Bad rename")
+    ).toThrow(/invalid session token/i);
+    expect(() =>
+      service.renameSession(registered.sessionUid, registered.sessionToken, "  ")
+    ).toThrow(/session display name cannot be empty/i);
+
+    const renameEvent = events.listEvents({
+      sessionUid: registered.sessionUid,
+      eventType: "session.renamed"
+    })[0];
+    expect(renameEvent).toMatchObject({
+      eventType: "session.renamed",
+      payload: {
+        previousDisplayName: "Codex",
+        displayName: "Codex Receiver - terminal 2"
+      }
+    });
+    expect(JSON.stringify(renameEvent)).not.toContain(registered.sessionToken);
+  });
+
+  it("lets a session admin close stale roster sessions without the target token", () => {
+    const admin = service.registerSession({
+      displayName: "Dashboard Admin",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {
+        sessionAdmin: true
+      }
+    });
+    const stale = service.registerSession({
+      displayName: "Old idle terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const outsider = service.registerSession({
+      displayName: "Regular operator",
+      clientType: "claude-code",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    now = new Date("2026-05-28T10:02:45.000Z");
+
+    const closed = service.closeSession(
+      stale.sessionUid,
+      admin.sessionUid,
+      admin.sessionToken,
+      "Closed from dashboard roster"
+    );
+
+    expect(closed).toMatchObject({
+      sessionUid: stale.sessionUid,
+      status: "disconnected",
+      statusDetail: "Closed from dashboard roster",
+      disconnectedAt: "2026-05-28T10:02:45.000Z"
+    });
+    expect(closed).not.toHaveProperty("sessionToken");
+    expect(() =>
+      service.closeSession(stale.sessionUid, outsider.sessionUid, outsider.sessionToken, "Nope")
+    ).toThrow(/session requires session admin capability/i);
+    expect(events.listEvents({ sessionUid: stale.sessionUid, eventType: "session.disconnected" })[0])
+      .toMatchObject({
+        payload: {
+          actorSessionUid: admin.sessionUid,
+          reason: "Closed from dashboard roster"
+        }
+      });
+    expect(JSON.stringify(closed)).not.toContain(stale.sessionToken);
+    expect(JSON.stringify(closed)).not.toContain(admin.sessionToken);
   });
 
   it("lists sessions by project and client type", () => {

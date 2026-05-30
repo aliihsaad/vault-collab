@@ -91,8 +91,15 @@ describe("Vault Collab schema migrations", () => {
       expect.arrayContaining([
         "agent_profiles",
         "launch_requests",
+        "attention_delivery_attempts",
         "discussion_threads",
         "discussion_messages"
+      ])
+    );
+    expect(indexNames(db)).toEqual(
+      expect.arrayContaining([
+        "idx_attention_delivery_attempts_session",
+        "idx_attention_delivery_attempts_status"
       ])
     );
   });
@@ -412,4 +419,12 @@ function columnNames(db: Database.Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
     (column) => column.name
   );
+}
+
+function indexNames(db: Database.Database): string[] {
+  return (
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{
+      name: string;
+    }>
+  ).map((index) => index.name);
 }

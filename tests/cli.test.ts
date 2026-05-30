@@ -541,6 +541,179 @@ describe("vault-collab CLI", () => {
     expect(JSON.stringify(events)).not.toContain(implementer.sessionToken);
   });
 
+  it("registers session delivery metadata from CLI flags", async () => {
+    const session = parseJson<{
+      delivery: {
+        mode: string;
+        wakeable: boolean;
+        lastAckEventId: number | null;
+        lastAckAt: string | null;
+      };
+    }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Managed Codex",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--delivery-mode",
+        "managed_process",
+        "--wakeable"
+      ])
+    );
+
+    expect(session.delivery).toEqual({
+      mode: "managed_process",
+      wakeable: true,
+      lastAckEventId: null,
+      lastAckAt: null
+    });
+  });
+
+  it("acknowledges attention through the CLI without leaking tokens", async () => {
+    const session = parseJson<{
+      sessionUid: string;
+      sessionToken: string;
+    }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Watched Codex",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--delivery-mode",
+        "local_watch"
+      ])
+    );
+
+    const acknowledged = parseJson<{
+      delivery: {
+        mode: string;
+        wakeable: boolean;
+        lastAckEventId: number | null;
+        lastAckAt: string | null;
+      };
+    }>(
+      await runCli([
+        "attention-ack",
+        "--db",
+        dbPath,
+        "--session-uid",
+        session.sessionUid,
+        "--session-token",
+        session.sessionToken,
+        "--latest-event-id",
+        "42"
+      ])
+    );
+    const events = parseJson<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await runCli(["events", "--db", dbPath, "--session-uid", session.sessionUid])
+    );
+
+    expect(acknowledged.delivery).toMatchObject({
+      mode: "local_watch",
+      wakeable: false,
+      lastAckEventId: 42
+    });
+    expect(events.map((event) => event.eventType)).toEqual([
+      "session.registered",
+      "session.attention_acknowledged"
+    ]);
+    expect(events.at(-1)?.payload).toMatchObject({
+      latestEventId: 42
+    });
+    expect(JSON.stringify(acknowledged)).not.toContain(session.sessionToken);
+    expect(JSON.stringify(events)).not.toContain(session.sessionToken);
+  });
+
+  it("renames and closes roster sessions through the CLI without leaking tokens", async () => {
+    const admin = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Dashboard Admin",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--capability",
+        "sessionAdmin=true"
+      ])
+    );
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Codex",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+
+    const renamed = parseJson<{ displayName: string; sessionToken?: string }>(
+      await runCli([
+        "session-rename",
+        "--db",
+        dbPath,
+        "--session-uid",
+        worker.sessionUid,
+        "--session-token",
+        worker.sessionToken,
+        "--display-name",
+        "Codex Receiver - terminal 2"
+      ])
+    );
+    const closed = parseJson<{ status: string; statusDetail: string; sessionToken?: string }>(
+      await runCli([
+        "session-close",
+        "--db",
+        dbPath,
+        "--target-session-uid",
+        worker.sessionUid,
+        "--actor-session-uid",
+        admin.sessionUid,
+        "--actor-session-token",
+        admin.sessionToken,
+        "--reason",
+        "Closed from dashboard roster"
+      ])
+    );
+
+    expect(renamed).toMatchObject({
+      displayName: "Codex Receiver - terminal 2"
+    });
+    expect(closed).toMatchObject({
+      status: "disconnected",
+      statusDetail: "Closed from dashboard roster"
+    });
+    expect(renamed).not.toHaveProperty("sessionToken");
+    expect(closed).not.toHaveProperty("sessionToken");
+    expect(JSON.stringify({ renamed, closed })).not.toContain(worker.sessionToken);
+    expect(JSON.stringify({ renamed, closed })).not.toContain(admin.sessionToken);
+  });
+
   it("records session pings and permission-needed events through the CLI", async () => {
     const coordinator = parseJson<{ sessionUid: string; sessionToken: string }>(
       await runCli([
@@ -575,7 +748,11 @@ describe("vault-collab CLI", () => {
       ])
     );
 
-    const ping = parseJson<{ eventType: string; sessionUid: string }>(
+    const ping = parseJson<{
+      event: { eventType: string; sessionUid: string };
+      targetSession: { sessionUid: string; delivery: { mode: string; wakeable: boolean } };
+      delivery: { mode: string; wakeable: boolean; delivered: boolean; nextStep: string };
+    }>(
       await runCli([
         "ping-session",
         "--db",
@@ -631,6 +808,36 @@ describe("vault-collab CLI", () => {
       "--session-token",
       worker.sessionToken
     ]);
+    const awaitingConfirmation = parseJson<{ status: string; progressNote: string }>(
+      await runCli([
+        "user-confirmation-request",
+        "--db",
+        dbPath,
+        "--handoff-uid",
+        handoff.handoffUid,
+        "--session-uid",
+        worker.sessionUid,
+        "--session-token",
+        worker.sessionToken,
+        "--question",
+        "Should I continue?"
+      ])
+    );
+    await runCli([
+      "update",
+      "--db",
+      dbPath,
+      "--handoff-uid",
+      handoff.handoffUid,
+      "--session-uid",
+      worker.sessionUid,
+      "--session-token",
+      worker.sessionToken,
+      "--status",
+      "in_progress",
+      "--progress-note",
+      "Resumed after user confirmation request"
+    ]);
     const awaitingHandoff = parseJson<{ status: string; progressNote: string }>(
       await runCli([
         "handoff-permission-request",
@@ -669,10 +876,27 @@ describe("vault-collab CLI", () => {
     }>(await runCli(["attention", "--db", dbPath, "--session-uid", worker.sessionUid]));
 
     expect(ping).toMatchObject({
-      eventType: "session.pinged",
-      sessionUid: worker.sessionUid
+      event: {
+        eventType: "session.pinged",
+        sessionUid: worker.sessionUid
+      },
+      targetSession: {
+        sessionUid: worker.sessionUid,
+        delivery: {
+          mode: "manual_poll",
+          wakeable: false
+        }
+      },
+      delivery: {
+        mode: "manual_poll",
+        wakeable: false,
+        delivered: false,
+        nextStep: "Target session must poll attention manually or run a watcher."
+      }
     });
-    const busyPing = parseJson<{ eventType: string; sessionUid: string }>(await runCli([
+    expect(JSON.stringify(ping)).not.toContain(worker.sessionToken);
+    expect(JSON.stringify(ping)).not.toContain(coordinator.sessionToken);
+    const busyPing = parseJson<{ event: { eventType: string; sessionUid: string } }>(await runCli([
       "ping-session",
       "--db",
       dbPath,
@@ -684,12 +908,18 @@ describe("vault-collab CLI", () => {
       "This should not interrupt an awaiting_user session."
     ]));
     expect(busyPing).toMatchObject({
-      eventType: "session.pinged",
-      sessionUid: worker.sessionUid
+      event: {
+        eventType: "session.pinged",
+        sessionUid: worker.sessionUid
+      }
     });
     expect(awaitingSession).toMatchObject({
       status: "awaiting_user",
       statusDetail: "Allow filesystem write?"
+    });
+    expect(awaitingConfirmation).toMatchObject({
+      status: "awaiting_user",
+      progressNote: "Should I continue?"
     });
     expect(awaitingHandoff).toMatchObject({
       status: "awaiting_user",
@@ -903,6 +1133,111 @@ describe("vault-collab CLI", () => {
     expect(refreshedWorker).toMatchObject({
       status: "working"
     });
+  });
+
+  it("receive-attention delivers through stdout and acknowledges managed attention", async () => {
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Managed Receiver",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--delivery-mode",
+        "managed_process",
+        "--wakeable"
+      ])
+    );
+
+    const receivePromise = runCli([
+      "receive-attention",
+      "--db",
+      dbPath,
+      "--session-uid",
+      worker.sessionUid,
+      "--session-token",
+      worker.sessionToken,
+      "--interval-ms",
+      "20",
+      "--timeout-ms",
+      "1000"
+    ]);
+    await delay(40);
+    const ping = parseJson<{ event: { eventId: number } }>(
+      await runCli([
+        "ping-session",
+        "--db",
+        dbPath,
+        "--target-session-uid",
+        worker.sessionUid,
+        "--message",
+        "Wake the managed receiver."
+      ])
+    );
+
+    const received = parseJson<{
+      timedOut: boolean;
+      attempt: {
+        status: string;
+        toEventId: number;
+        deliveredAt: string | null;
+      } | null;
+      deliveredMessage: string | null;
+      session: {
+        delivery: {
+          lastAckEventId: number | null;
+          lastAckAt: string | null;
+        };
+      };
+    }>(await receivePromise);
+
+    expect(received.timedOut).toBe(false);
+    expect(received.attempt).toMatchObject({
+      status: "delivered",
+      toEventId: ping.event.eventId
+    });
+    expect(received.attempt?.deliveredAt).not.toBeNull();
+    expect(received.deliveredMessage).toContain("session_ping");
+    expect(received.deliveredMessage).toContain("Wake the managed receiver.");
+    expect(received.session.delivery.lastAckEventId).toBe(ping.event.eventId);
+    expect(received.session.delivery.lastAckAt).not.toBeNull();
+    expect(JSON.stringify(received)).not.toContain(worker.sessionToken);
+
+    const attempts = parseJson<
+      Array<{
+        attemptUid: string;
+        sessionUid: string;
+        status: string;
+        toEventId: number;
+        message: string | null;
+      }>
+    >(
+      await runCli([
+        "delivery-attempts",
+        "--db",
+        dbPath,
+        "--session-uid",
+        worker.sessionUid,
+        "--status",
+        "delivered"
+      ])
+    );
+
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      attemptUid: received.attempt?.attemptUid,
+      sessionUid: worker.sessionUid,
+      status: "delivered",
+      toEventId: ping.event.eventId,
+      message: "Delivered to stdout adapter."
+    });
+    expect(JSON.stringify(attempts)).not.toContain(worker.sessionToken);
   });
 
   it("runs the launch-request broker lifecycle through flat JSON commands", async () => {

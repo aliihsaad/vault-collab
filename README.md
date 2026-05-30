@@ -295,9 +295,13 @@ node dist\cli.js handoff-permission-request --db $db --handoff-uid vc_handoff_..
 ```
 
 `ping-session` records a `session.pinged` event only, and only when the target
-session is currently `idle`. This prevents pings from interrupting a working,
-blocked, or awaiting-user session. It does not wake a stopped process, claim
-work, or execute anything. Permission-request commands move the session or
+session is not terminal (`complete` or `disconnected`). Its JSON response wraps
+the stored `event`, token-safe `targetSession`, and a `delivery` object. For
+`manual_poll` targets, `delivery.delivered` is `false` and the next step is to
+poll attention manually or run a watcher. For wakeable managed/notification
+targets, `delivery.delivered` is still `false` until a receiver acknowledges the
+event. It does not interrupt a working session, wake a stopped process, claim
+work, change session state, or execute anything. Permission-request commands move the session or
 handoff to `awaiting_user`, store the question in the public detail field, and
 emit token-safe `session.permission_requested` or
 `handoff.permission_requested` events. Agents should record these events before
@@ -312,6 +316,10 @@ node dist\cli.js attention --db $db --session-uid vc_sess_...
 node dist\cli.js attention --db $db --session-uid vc_sess_... --since-event-id 42 --no-current-handoffs
 
 node dist\cli.js watch-attention --db $db --session-uid vc_sess_... --interval-ms 2000 --timeout-ms 30000
+
+node dist\cli.js receive-attention --db $db --session-uid vc_sess_... --session-token ... --interval-ms 2000 --timeout-ms 30000
+
+node dist\cli.js delivery-attempts --db $db --session-uid vc_sess_... --status failed
 ```
 
 The feed is token-safe and does not mutate state. It aggregates pings,
@@ -322,7 +330,13 @@ items appear or the timeout expires, then prints manual `recommendedActions`
 such as inspecting detail or running `claim` with the caller's owner token. It
 does not mutate state, auto-claim, wake a stopped client, or execute commands.
 `ping-session` is therefore still only a passive event unless the target agent
-checks `attention` or has `watch-attention` running.
+checks `attention` or has `watch-attention` running. AI clients that cannot run
+a host-side polling loop will not react until their next turn polls attention.
+`receive-attention` is the first receiver loop: it uses a stdout adapter,
+persists a delivery attempt, and acknowledges the latest attention event only
+after the adapter succeeds. It proves the receiver/ack path, but it still does
+not inject input into a model or terminal process. `delivery-attempts` reads the
+token-safe delivery history for dashboard status and failure reasons.
 
 Inspect event history:
 
@@ -332,6 +346,18 @@ node dist\cli.js events --db $db --handoff-uid vc_handoff_...
 node dist\cli.js events --db $db --session-uid vc_sess_...
 node dist\cli.js events --db $db --session-uid vc_sess_... --event-type session.permission_requested
 ```
+
+Rename or close confusing roster sessions:
+
+```powershell
+node dist\cli.js session-rename --db $db --session-uid vc_sess_... --session-token ... --display-name "Codex receiver - terminal 2"
+
+node dist\cli.js session-close --db $db --target-session-uid vc_sess_... --actor-session-uid vc_sess_admin... --actor-session-token ... --reason "Closed from dashboard roster"
+```
+
+`session-close` marks the row `disconnected`; it does not kill an external
+Codex, Claude, or terminal process. It can close the acting session itself, or
+another session only when the actor has `sessionAdmin=true` or `admin=true`.
 
 Create and inspect an append-only discussion:
 
