@@ -200,6 +200,27 @@ describe("vault-collab CLI", () => {
       progressNote: "CLI tests are driving the implementation."
     });
 
+    for (const status of ["abandoned", "stale"]) {
+      const terminalUpdate = await runCli([
+        "update",
+        "--db",
+        dbPath,
+        "--handoff-uid",
+        published.handoffUid,
+        "--session-uid",
+        claude.sessionUid,
+        "--session-token",
+        claude.sessionToken,
+        "--status",
+        status,
+        "--progress-note",
+        "Do not route terminal state through update."
+      ]);
+
+      expect(terminalUpdate.exitCode).toBe(1);
+      expect(terminalUpdate.stderr).toMatch(/dedicated lifecycle method/i);
+    }
+
     const detail = parseJson<{
       handoff: { handoffUid: string; status: string };
       events: Array<{ eventType: string }>;

@@ -9,6 +9,7 @@ import { HandoffDetailService } from "../services/handoff-detail.service.js";
 import { HandoffService } from "../services/handoff.service.js";
 import { SessionService } from "../services/session.service.js";
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../services/vault-link.service.js";
+import { progressHandoffStatuses } from "../types.js";
 import type {
   AgentProfileStatus,
   ClientType,
@@ -40,6 +41,7 @@ export const vaultCollabToolNames = [
   "vault_collab_get_handoff_detail",
   "vault_collab_update_handoff_metadata",
   "vault_collab_create_discussion_thread",
+  "vault_collab_create_handoff_discussion_thread",
   "vault_collab_add_discussion_message",
   "vault_collab_list_discussion_threads",
   "vault_collab_get_discussion_thread",
@@ -179,6 +181,7 @@ const discussionMessageTypeValues = [
 const clientTypeSchema = z.enum(clientTypeValues);
 const sessionStatusSchema = z.enum(sessionStatusValues);
 const handoffStatusSchema = z.enum(handoffStatusValues);
+const progressHandoffStatusSchema = z.enum(progressHandoffStatuses);
 const handoffPrioritySchema = z.enum(handoffPriorityValues);
 const agentProfileStatusSchema = z.enum(agentProfileStatusValues);
 const discussionThreadStatusSchema = z.enum(discussionThreadStatusValues);
@@ -388,7 +391,15 @@ const threadUidInputSchema = z.object({
 
 const createDiscussionThreadInputSchema = ownedSessionInputSchema.extend({
   project: requiredStringSchema("Project the discussion belongs to."),
-  handoffUid: optionalStringSchema("Optional linked handoff identifier."),
+  handoffUid: optionalStringSchema(
+    "Optional linked handoff identifier. For handoff discussions, prefer vault_collab_create_handoff_discussion_thread so get_handoff_detail includes the thread."
+  ),
+  handoff_uid: optionalStringSchema("Snake_case alias for handoffUid."),
+  title: requiredStringSchema("Discussion title.")
+});
+
+const createHandoffDiscussionThreadInputSchema = ownedSessionInputSchema.extend({
+  handoffUid: optionalStringSchema("Required if handoff_uid is omitted. Handoff to link the discussion to."),
   handoff_uid: optionalStringSchema("Snake_case alias for handoffUid."),
   title: requiredStringSchema("Discussion title.")
 });
@@ -421,7 +432,9 @@ const listEventsInputSchema = z.object({
 });
 
 const updateHandoffInputSchema = ownedHandoffInputSchema.extend({
-  status: handoffStatusSchema.describe("New handoff status."),
+  status: progressHandoffStatusSchema.describe(
+    "New progress status. Use claim_handoff, release_handoff, resolve_handoff, recover_handoff, or reopen_handoff for lifecycle transitions."
+  ),
   progressNote: optionalStringSchema("Required if progress_note is omitted. Progress note."),
   progress_note: optionalStringSchema("Snake_case alias for progressNote.")
 });
@@ -574,8 +587,16 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
   {
     name: "vault_collab_create_discussion_thread",
     title: "Create Discussion Thread",
-    description: "Create an owner-token checked discussion thread for a project or handoff.",
+    description:
+      "Create an owner-token checked project discussion thread. Include handoffUid only for explicit handoff linkage; project-only threads do not appear in get_handoff_detail.",
     inputSchema: createDiscussionThreadInputSchema
+  },
+  {
+    name: "vault_collab_create_handoff_discussion_thread",
+    title: "Create Handoff Discussion Thread",
+    description:
+      "Create an owner-token checked discussion thread linked to a handoff; derives the project from the handoff so get_handoff_detail shows it.",
+    inputSchema: createHandoffDiscussionThreadInputSchema
   },
   {
     name: "vault_collab_add_discussion_message",
@@ -850,6 +871,13 @@ export function createVaultCollabMcpTools(
         createdBySessionUid: requiredString(args, "sessionUid", "session_uid"),
         sessionToken: requiredString(args, "sessionToken", "session_token")
       }),
+    vault_collab_create_handoff_discussion_thread: (args) =>
+      discussions.createHandoffThread({
+        handoffUid: requiredString(args, "handoffUid", "handoff_uid"),
+        title: requiredString(args, "title"),
+        createdBySessionUid: requiredString(args, "sessionUid", "session_uid"),
+        sessionToken: requiredString(args, "sessionToken", "session_token")
+      }),
     vault_collab_add_discussion_message: (args) =>
       discussions.addMessage(
         requiredString(args, "threadUid", "thread_uid"),
@@ -886,7 +914,7 @@ export function createVaultCollabMcpTools(
         requiredString(args, "handoffUid", "handoff_uid"),
         requiredString(args, "sessionUid", "session_uid"),
         requiredString(args, "sessionToken", "session_token"),
-        requiredHandoffStatus(args, "status"),
+        requiredProgressHandoffStatus(args, "status"),
         requiredString(args, "progressNote", "progress_note")
       ),
     vault_collab_request_user_confirmation: (args) =>
@@ -1122,6 +1150,20 @@ function parseSessionStatus(value: string): SessionStatus {
 
 function requiredHandoffStatus(args: Record<string, unknown>, ...keys: string[]): HandoffStatus {
   return parseHandoffStatus(requiredString(args, ...keys));
+}
+
+function requiredProgressHandoffStatus(
+  args: Record<string, unknown>,
+  ...keys: string[]
+): HandoffStatus {
+  const value = requiredString(args, ...keys);
+  if (!progressHandoffStatuses.includes(value as (typeof progressHandoffStatuses)[number])) {
+    throw new Error(
+      `Invalid handoff progress status: ${value}. Use the dedicated lifecycle handoff tools for available, claimed, resolved, abandoned, or stale.`
+    );
+  }
+
+  return value as HandoffStatus;
 }
 
 function optionalHandoffStatus(

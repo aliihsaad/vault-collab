@@ -307,6 +307,32 @@ describe("HandoffService", () => {
     );
   });
 
+  it("rejects terminal statuses through the generic progress update path", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Do not terminal-update me",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+
+    for (const status of ["abandoned", "stale"] as const) {
+      expect(() =>
+        handoffs.updateHandoff(
+          handoff.handoffUid,
+          claude.sessionUid,
+          claude.sessionToken,
+          status,
+          `Attempting ${status}`
+        )
+      ).toThrow(/dedicated lifecycle method/i);
+    }
+
+    expect(handoffs.getHandoff(handoff.handoffUid)).toMatchObject({
+      status: "claimed",
+      progressNote: null
+    });
+  });
+
   it("links Vault memory to an existing handoff only for the source session owner", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Link a saved Vault brief.",

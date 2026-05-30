@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { progressHandoffStatuses } from "../types.js";
 import type { EventService } from "./event.service.js";
 import type {
   ClientType,
@@ -384,7 +385,7 @@ export class HandoffService {
     progressNote: string
   ): HandoffRecord {
     this.assertClaimOwner(handoffUid, sessionUid, sessionToken);
-    if (status === "available" || status === "claimed" || status === "resolved") {
+    if (!progressHandoffStatuses.includes(status as (typeof progressHandoffStatuses)[number])) {
       throw new Error(`Use a dedicated lifecycle method for handoff status: ${status}`);
     }
 

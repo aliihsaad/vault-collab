@@ -25,6 +25,14 @@ function schemaKeys(toolName: string): string[] {
   return Object.keys(definition?.inputSchema.shape ?? {});
 }
 
+function schemaField(toolName: string, key: string): { safeParse: (value: unknown) => { success: boolean } } {
+  const definition = vaultCollabToolDefinitions.find((tool) => tool.name === toolName);
+  expect(definition).toBeDefined();
+  const field = definition?.inputSchema.shape[key];
+  expect(field).toBeDefined();
+  return field as { safeParse: (value: unknown) => { success: boolean } };
+}
+
 describe("Vault Collab MCP tools", () => {
   let dbPath: string;
   let cwd: string;
@@ -62,6 +70,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_get_handoff_detail",
       "vault_collab_update_handoff_metadata",
       "vault_collab_create_discussion_thread",
+      "vault_collab_create_handoff_discussion_thread",
       "vault_collab_add_discussion_message",
       "vault_collab_list_discussion_threads",
       "vault_collab_get_discussion_thread",
@@ -101,6 +110,18 @@ describe("Vault Collab MCP tools", () => {
         "capabilities"
       ])
     );
+  });
+
+  it("advertises only progress statuses for update_handoff", () => {
+    const status = schemaField("vault_collab_update_handoff", "status");
+
+    for (const value of ["in_progress", "blocked", "awaiting_user", "verification_needed"]) {
+      expect(status.safeParse(value).success, value).toBe(true);
+    }
+
+    for (const value of ["available", "claimed", "resolved", "abandoned", "stale"]) {
+      expect(status.safeParse(value).success, value).toBe(false);
+    }
   });
 
   it("does not expose empty passthrough-only schemas for any MCP tool", () => {
@@ -424,6 +445,61 @@ describe("Vault Collab MCP tools", () => {
     expect(JSON.stringify(failed)).not.toContain(badToken);
     expect(JSON.stringify(threadDetail)).not.toContain(claude.sessionToken);
     expect(JSON.stringify(threadDetail)).not.toContain(opencode.sessionToken);
+  });
+
+  it("creates handoff-linked discussion threads without requiring a project argument", async () => {
+    const keys = schemaKeys("vault_collab_create_handoff_discussion_thread");
+    expect(keys).toEqual(
+      expect.arrayContaining(["handoffUid", "handoff_uid", "title", "sessionUid", "sessionToken"])
+    );
+    expect(keys).not.toContain("project");
+
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const coordinator = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Coordinator",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const handoff = structured<{ handoffUid: string }>(
+      await tools.callTool("vault_collab_publish_handoff", {
+        shortPrompt: "Discuss the handoff",
+        sourceProject: "Source Project",
+        targetProject: "Vault Collab"
+      })
+    );
+
+    const thread = structured<{ threadUid: string; handoffUid: string | null; project: string }>(
+      await tools.callTool("vault_collab_create_handoff_discussion_thread", {
+        handoffUid: handoff.handoffUid,
+        title: "Handoff-linked discussion",
+        sessionUid: coordinator.sessionUid,
+        sessionToken: coordinator.sessionToken
+      })
+    );
+    const detail = structured<{
+      discussionThreads: Array<{ threadUid: string; handoffUid: string | null; project: string }>;
+    }>(
+      await tools.callTool("vault_collab_get_handoff_detail", {
+        handoffUid: handoff.handoffUid
+      })
+    );
+
+    expect(thread).toMatchObject({
+      handoffUid: handoff.handoffUid,
+      project: "Vault Collab"
+    });
+    expect(detail.discussionThreads).toEqual([
+      expect.objectContaining({
+        threadUid: thread.threadUid,
+        handoffUid: handoff.handoffUid,
+        project: "Vault Collab"
+      })
+    ]);
   });
 
   it("stops automatic heartbeat after explicit disconnect", async () => {

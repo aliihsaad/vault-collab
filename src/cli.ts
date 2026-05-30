@@ -8,6 +8,7 @@ import { EventService } from "./services/event.service.js";
 import { HandoffDetailService } from "./services/handoff-detail.service.js";
 import { HandoffService } from "./services/handoff.service.js";
 import { SessionService } from "./services/session.service.js";
+import { progressHandoffStatuses } from "./types.js";
 import type {
   AgentProfileStatus,
   ClientType,
@@ -295,7 +296,7 @@ function execute(parsed: ParsedCommand, services: Services): unknown {
         requiredOption(parsed, "handoff-uid"),
         requiredOption(parsed, "session-uid"),
         requiredOption(parsed, "session-token"),
-        optionHandoffStatus(parsed, "status"),
+        optionProgressHandoffStatus(parsed, "status"),
         requiredOption(parsed, "progress-note")
       );
 
@@ -514,6 +515,17 @@ function parseSessionStatus(value: string): SessionStatus {
 
 function optionHandoffStatus(parsed: ParsedCommand, name: string): HandoffStatus {
   return parseHandoffStatus(requiredOption(parsed, name));
+}
+
+function optionProgressHandoffStatus(parsed: ParsedCommand, name: string): HandoffStatus {
+  const value = requiredOption(parsed, name);
+  if (!progressHandoffStatuses.includes(value as (typeof progressHandoffStatuses)[number])) {
+    throw new Error(
+      `Invalid handoff progress status: ${value}. Use a dedicated lifecycle method for available, claimed, resolved, abandoned, or stale.`
+    );
+  }
+
+  return value as HandoffStatus;
 }
 
 function optionalHandoffStatus(parsed: ParsedCommand, name: string): HandoffStatus | undefined {

@@ -166,6 +166,13 @@ export type HandoffStatus =
   | "abandoned"
   | "stale";
 
+export const progressHandoffStatuses = [
+  "in_progress",
+  "blocked",
+  "awaiting_user",
+  "verification_needed"
+] as const satisfies readonly HandoffStatus[];
+
 export type HandoffPriority = "low" | "normal" | "high" | "urgent";
 
 export interface PublishHandoffInput {
@@ -276,6 +283,13 @@ export interface CreateDiscussionThreadInput {
   createdBySessionUid: string;
   sessionToken: string;
   handoffUid?: string | null;
+}
+
+export interface CreateHandoffDiscussionThreadInput {
+  handoffUid: string;
+  title: string;
+  createdBySessionUid: string;
+  sessionToken: string;
 }
 
 export interface AddDiscussionMessageInput {

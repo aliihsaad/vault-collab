@@ -3,6 +3,7 @@ import type { CollabDatabase } from "../database/connection.js";
 import type { EventService } from "./event.service.js";
 import type {
   AddDiscussionMessageInput,
+  CreateHandoffDiscussionThreadInput,
   CreateDiscussionThreadInput,
   DiscussionMessage,
   DiscussionMessageType,
@@ -59,14 +60,9 @@ export class DiscussionService {
     }
 
     if (input.handoffUid) {
-      const handoff = this.db
-        .prepare("SELECT target_project FROM handoffs WHERE handoff_uid = ?")
-        .get(input.handoffUid) as { target_project: string } | undefined;
-      if (!handoff) {
-        throw new Error(`Handoff not found: ${input.handoffUid}`);
-      }
+      const targetProject = this.requireHandoffTargetProject(input.handoffUid);
 
-      if (handoff.target_project !== input.project) {
+      if (targetProject !== input.project) {
         throw new Error("Discussion project must match handoff target project");
       }
     }
@@ -115,6 +111,17 @@ export class DiscussionService {
     });
 
     return this.requireThreadSummary(threadUid);
+  }
+
+  createHandoffThread(input: CreateHandoffDiscussionThreadInput): DiscussionThreadSummary {
+    const project = this.requireHandoffTargetProject(input.handoffUid);
+    return this.createThread({
+      project,
+      handoffUid: input.handoffUid,
+      title: input.title,
+      createdBySessionUid: input.createdBySessionUid,
+      sessionToken: input.sessionToken
+    });
   }
 
   addMessage(
@@ -257,6 +264,17 @@ export class DiscussionService {
     }
 
     return thread;
+  }
+
+  private requireHandoffTargetProject(handoffUid: string): string {
+    const handoff = this.db
+      .prepare("SELECT target_project FROM handoffs WHERE handoff_uid = ?")
+      .get(handoffUid) as { target_project: string } | undefined;
+    if (!handoff) {
+      throw new Error(`Handoff not found: ${handoffUid}`);
+    }
+
+    return handoff.target_project;
   }
 
   private findThreadSummary(threadUid: string): DiscussionThreadSummary | null {

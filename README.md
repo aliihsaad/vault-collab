@@ -163,6 +163,8 @@ node dist\cli.js claim --db $db --handoff-uid vc_handoff_... --session-uid vc_se
 Update and resolve:
 
 ```powershell
+# `update` is for progress states only: in_progress, blocked, awaiting_user,
+# or verification_needed. Use lifecycle commands for claim/release/resolve/recover/reopen.
 node dist\cli.js update --db $db --handoff-uid vc_handoff_... --session-uid vc_sess_... --session-token ... --status in_progress --progress-note "Implementation in progress."
 
 node dist\cli.js resolve --db $db --handoff-uid vc_handoff_... --session-uid vc_sess_... --session-token ... --summary "Completed and verified."
@@ -226,6 +228,9 @@ node dist\cli.js events --db $db --session-uid vc_sess_... --event-type session.
 Create and inspect an append-only discussion:
 
 ```powershell
+# Prefer the MCP `vault_collab_create_handoff_discussion_thread` tool for
+# handoff-linked discussions; it derives the project from the handoff so
+# `vault_collab_get_handoff_detail` includes the thread.
 node dist\cli.js discussion-create --db $db --project "Vault Collab" --handoff-uid vc_handoff_... --title "Review concerns" --session-uid vc_sess_... --session-token ...
 
 node dist\cli.js discussion-add-message --db $db --thread-uid vc_thread_... --session-uid vc_sess_... --session-token ... --type proposal --body "Keep this provider-neutral."
@@ -276,6 +281,7 @@ Available MCP tools include:
 - `vault_collab_get_handoff_detail`
 - `vault_collab_update_handoff_metadata`
 - `vault_collab_create_discussion_thread`
+- `vault_collab_create_handoff_discussion_thread`
 - `vault_collab_add_discussion_message`
 - `vault_collab_list_discussion_threads`
 - `vault_collab_get_discussion_thread`
