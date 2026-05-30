@@ -374,6 +374,22 @@ describe("HandoffService", () => {
       ])
     );
 
+    const outsiderActions = handoffs.getHandoffActions(
+      handoff.handoffUid,
+      codex.sessionUid,
+      codex.sessionToken
+    );
+
+    expect(outsiderActions.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "claim",
+          enabled: false,
+          reason: "Handoff is already claimed by another session."
+        })
+      ])
+    );
+
     handoffs.resolveHandoff(
       handoff.handoffUid,
       claude.sessionUid,

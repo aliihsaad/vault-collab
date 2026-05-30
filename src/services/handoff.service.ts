@@ -248,7 +248,7 @@ export class HandoffService {
           kind: "claim",
           toolName: "vault_collab_claim_handoff",
           enabled: row.status === "available" && row.claimed_by_session_uid === null,
-          reason: this.claimActionReason(row)
+          reason: this.claimActionReason(row, isClaimOwner)
         }),
         this.actionAffordance({
           kind: "update",
@@ -964,13 +964,15 @@ export class HandoffService {
     };
   }
 
-  private claimActionReason(row: HandoffRow): string {
+  private claimActionReason(row: HandoffRow, isClaimOwner: boolean): string {
     if (closedInboxStatuses.includes(row.status)) {
       return `Handoff is closed: ${row.status}.`;
     }
 
     if (row.claimed_by_session_uid) {
-      return "Handoff is already claimed by the acting session.";
+      return isClaimOwner
+        ? "Handoff is already claimed by the acting session."
+        : "Handoff is already claimed by another session.";
     }
 
     if (row.status !== "available") {
