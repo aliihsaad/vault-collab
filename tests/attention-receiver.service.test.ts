@@ -25,9 +25,9 @@ describe("AttentionReceiverService", () => {
     const clock = () => now;
     db = createCollabDatabase(":memory:");
     events = new EventService(db, clock);
-    sessions = new SessionService(db, events, clock);
-    const handoffs = new HandoffService(db, events, clock);
     const launchRequests = new LaunchRequestService(db, events, clock);
+    sessions = new SessionService(db, events, launchRequests, clock);
+    const handoffs = new HandoffService(db, events, clock);
     const discussions = new DiscussionService(db, events, clock);
     attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);
     deliveredBatches = [];

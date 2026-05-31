@@ -19,13 +19,57 @@ describe("LaunchRequestService", () => {
   let broker: RegisteredSession;
   let secondBroker: RegisteredSession;
 
+  function createRunningLaunchWithLaunchedSession(displayName = "Managed Codex") {
+    const request = service.createLaunchRequest({
+      requestedBySessionUid: requester.sessionUid,
+      sessionToken: requester.sessionToken,
+      provider: "codex",
+      model: "gpt-5-codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "implementer",
+      initialInstructions: "Run the managed worker.",
+      permissionMode: "workspace-write"
+    });
+    service.approveLaunchRequest(
+      request.launchRequestUid,
+      approver.sessionUid,
+      approver.sessionToken,
+      "Approved for broker pickup."
+    );
+    service.markLaunchRequestLaunching(
+      request.launchRequestUid,
+      broker.sessionUid,
+      broker.sessionToken,
+      "Broker accepted request."
+    );
+    const launched = sessions.registerSession({
+      displayName,
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {
+        launchedBy: request.launchRequestUid
+      }
+    });
+
+    const running = service.markLaunchRequestRunning(
+      request.launchRequestUid,
+      broker.sessionUid,
+      broker.sessionToken,
+      launched.sessionUid,
+      "Launched session registered."
+    );
+    return { launched, running };
+  }
+
   beforeEach(() => {
     now = new Date("2026-05-30T09:00:00.000Z");
     const clock = () => now;
     db = createCollabDatabase(":memory:");
     events = new EventService(db, clock);
-    sessions = new SessionService(db, events, clock);
     service = new LaunchRequestService(db, events, clock);
+    sessions = new SessionService(db, events, service, clock);
 
     requester = sessions.registerSession({
       displayName: "Operator",
@@ -360,6 +404,180 @@ describe("LaunchRequestService", () => {
       launchedSessionUid: launched.sessionUid,
       selfAssociated: true
     });
+  });
+
+  it("stops a linked running launch request when its launched session is closed", () => {
+    const { launched, running } = createRunningLaunchWithLaunchedSession("Managed Codex");
+
+    now = new Date("2026-05-30T09:04:00.000Z");
+    sessions.closeSession(
+      launched.sessionUid,
+      launched.sessionUid,
+      launched.sessionToken,
+      "Closed from dashboard roster."
+    );
+
+    expect(service.getLaunchRequest(running.launchRequestUid)).toMatchObject({
+      status: "stopped",
+      statusDetail: "Closed from dashboard roster.",
+      launchedSessionUid: launched.sessionUid,
+      completedAt: "2026-05-30T09:04:00.000Z",
+      updatedAt: "2026-05-30T09:04:00.000Z"
+    });
+    const stoppedEvents = service
+      .getLaunchRequestDetail(running.launchRequestUid)
+      .events.filter((event) => event.eventType === "launch_request.stopped");
+    expect(stoppedEvents).toHaveLength(1);
+    expect(stoppedEvents[0]).toMatchObject({
+      sessionUid: launched.sessionUid,
+      payload: {
+        launchRequestUid: running.launchRequestUid,
+        previousStatus: "running",
+        reason: "Closed from dashboard roster.",
+        cascadedFromSessionUid: launched.sessionUid
+      }
+    });
+  });
+
+  it("stops linked launching and running launch requests during stale session sweeps", () => {
+    const { launched, running } = createRunningLaunchWithLaunchedSession("Stale managed Codex");
+    const approvedLaunching = service.createLaunchRequest({
+      requestedBySessionUid: requester.sessionUid,
+      sessionToken: requester.sessionToken,
+      provider: "codex",
+      model: "gpt-5-codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "implementer",
+      initialInstructions: "Marked launching but not running.",
+      permissionMode: "workspace-write"
+    });
+    service.approveLaunchRequest(
+      approvedLaunching.launchRequestUid,
+      approver.sessionUid,
+      approver.sessionToken,
+      "Approved for broker pickup."
+    );
+    const launching = service.markLaunchRequestLaunching(
+      approvedLaunching.launchRequestUid,
+      broker.sessionUid,
+      broker.sessionToken,
+      "Broker accepted request."
+    );
+    db.prepare("UPDATE launch_requests SET launched_session_uid = ? WHERE launch_request_uid = ?")
+      .run(launched.sessionUid, launching.launchRequestUid);
+
+    db.prepare("UPDATE sessions SET last_heartbeat_at = ? WHERE session_uid = ?").run(
+      "2026-05-30T07:00:00.000Z",
+      launched.sessionUid
+    );
+    now = new Date("2026-05-30T10:00:00.000Z");
+
+    sessions.listSessions();
+
+    expect(service.getLaunchRequest(running.launchRequestUid)).toMatchObject({
+      status: "stopped",
+      statusDetail: "Disconnected after stale heartbeat.",
+      completedAt: "2026-05-30T10:00:00.000Z"
+    });
+    expect(service.getLaunchRequest(launching.launchRequestUid)).toMatchObject({
+      status: "stopped",
+      statusDetail: "Disconnected after stale heartbeat.",
+      completedAt: "2026-05-30T10:00:00.000Z"
+    });
+    const stoppedEvents = service
+      .getLaunchRequestDetail(running.launchRequestUid)
+      .events.filter((event) => event.eventType === "launch_request.stopped");
+    expect(stoppedEvents).toHaveLength(1);
+    expect(stoppedEvents[0].payload).toMatchObject({
+      launchRequestUid: running.launchRequestUid,
+      previousStatus: "running",
+      reason: "Disconnected after stale heartbeat.",
+      cascadedFromSessionUid: launched.sessionUid
+    });
+  });
+
+  it("does not duplicate launch stop events on repeated disconnects", () => {
+    const { launched, running } = createRunningLaunchWithLaunchedSession(
+      "Repeat-close managed Codex"
+    );
+
+    now = new Date("2026-05-30T09:04:00.000Z");
+    sessions.disconnectSession(launched.sessionUid, launched.sessionToken);
+    now = new Date("2026-05-30T09:05:00.000Z");
+
+    expect(() =>
+      sessions.disconnectSession(launched.sessionUid, launched.sessionToken)
+    ).not.toThrow();
+
+    expect(service.getLaunchRequest(running.launchRequestUid)).toMatchObject({
+      status: "stopped",
+      completedAt: "2026-05-30T09:04:00.000Z"
+    });
+    const stoppedEvents = service
+      .getLaunchRequestDetail(running.launchRequestUid)
+      .events.filter((event) => event.eventType === "launch_request.stopped");
+    expect(stoppedEvents).toHaveLength(1);
+  });
+
+  it("does not stop requested or approved launch requests linked to a disconnected session", () => {
+    const launched = sessions.registerSession({
+      displayName: "Unstarted managed Codex",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const requested = service.createLaunchRequest({
+      requestedBySessionUid: requester.sessionUid,
+      sessionToken: requester.sessionToken,
+      provider: "codex",
+      model: "gpt-5-codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "implementer",
+      initialInstructions: "Not approved yet.",
+      permissionMode: "workspace-write"
+    });
+    const approved = service.createLaunchRequest({
+      requestedBySessionUid: requester.sessionUid,
+      sessionToken: requester.sessionToken,
+      provider: "codex",
+      model: "gpt-5-codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "implementer",
+      initialInstructions: "Approved but not launched.",
+      permissionMode: "workspace-write"
+    });
+    service.approveLaunchRequest(
+      approved.launchRequestUid,
+      approver.sessionUid,
+      approver.sessionToken,
+      "Approved but waiting for broker."
+    );
+    db.prepare("UPDATE launch_requests SET launched_session_uid = ? WHERE launch_request_uid IN (?, ?)")
+      .run(launched.sessionUid, requested.launchRequestUid, approved.launchRequestUid);
+
+    now = new Date("2026-05-30T09:04:00.000Z");
+    sessions.closeSession(launched.sessionUid, launched.sessionUid, launched.sessionToken);
+
+    expect(service.getLaunchRequest(requested.launchRequestUid)).toMatchObject({
+      status: "requested",
+      completedAt: null
+    });
+    expect(service.getLaunchRequest(approved.launchRequestUid)).toMatchObject({
+      status: "approved",
+      completedAt: null
+    });
+    const stoppedEvents = events
+      .listEvents({ eventType: "launch_request.stopped" })
+      .filter(
+        (event) =>
+          event.payload.launchRequestUid === requested.launchRequestUid ||
+          event.payload.launchRequestUid === approved.launchRequestUid
+      );
+    expect(stoppedEvents).toHaveLength(0);
   });
 
   it("describes owner-token-aware launch request actions for dashboards", () => {

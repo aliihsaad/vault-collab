@@ -3,6 +3,7 @@ import { createCollabDatabase, type CollabDatabase } from "../src/database/conne
 import { getLeaseTtlMs } from "../src/lease.js";
 import { EventService } from "../src/services/event.service.js";
 import { HandoffService } from "../src/services/handoff.service.js";
+import { LaunchRequestService } from "../src/services/launch-request.service.js";
 import { SessionService } from "../src/services/session.service.js";
 import type { RegisteredSession } from "../src/types.js";
 
@@ -22,7 +23,8 @@ describe("HandoffService", () => {
     const clock = () => now;
     db = createCollabDatabase(":memory:");
     events = new EventService(db, clock);
-    sessions = new SessionService(db, events, clock);
+    const launchRequests = new LaunchRequestService(db, events, clock);
+    sessions = new SessionService(db, events, launchRequests, clock);
     handoffs = new HandoffService(db, events, clock);
 
     codex = sessions.registerSession({

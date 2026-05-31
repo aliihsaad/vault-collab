@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCollabDatabase, type CollabDatabase } from "../src/database/connection.js";
 import { EventService } from "../src/services/event.service.js";
 import { HandoffService } from "../src/services/handoff.service.js";
+import { LaunchRequestService } from "../src/services/launch-request.service.js";
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../src/services/vault-link.service.js";
 import type { JsonRecord, RegisteredSession } from "../src/types.js";
 import { SessionService } from "../src/services/session.service.js";
@@ -46,7 +47,8 @@ describe("VaultLinkedHandoffService", () => {
     const clock = () => now;
     db = createCollabDatabase(":memory:");
     events = new EventService(db, clock);
-    sessions = new SessionService(db, events, clock);
+    const launchRequests = new LaunchRequestService(db, events, clock);
+    sessions = new SessionService(db, events, launchRequests, clock);
     handoffs = new HandoffService(db, events, clock);
     vault = new RecordingVaultMemoryClient();
     linkedHandoffs = new VaultLinkedHandoffService(handoffs, vault);

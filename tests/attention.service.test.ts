@@ -31,9 +31,9 @@ describe("AttentionService", () => {
     const clock = () => now;
     db = createCollabDatabase(":memory:");
     events = new EventService(db, clock);
-    sessions = new SessionService(db, events, clock);
-    handoffs = new HandoffService(db, events, clock);
     launchRequests = new LaunchRequestService(db, events, clock);
+    sessions = new SessionService(db, events, launchRequests, clock);
+    handoffs = new HandoffService(db, events, clock);
     discussions = new DiscussionService(db, events, clock);
     attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);
 

@@ -4,6 +4,7 @@ import { AgentProfileService } from "../src/services/agent-profile.service.js";
 import { DiscussionService } from "../src/services/discussion.service.js";
 import { EventService } from "../src/services/event.service.js";
 import { HandoffService } from "../src/services/handoff.service.js";
+import { LaunchRequestService } from "../src/services/launch-request.service.js";
 import { SessionService } from "../src/services/session.service.js";
 import type { HandoffRecord, RegisteredSession } from "../src/types.js";
 
@@ -26,7 +27,8 @@ describe("DiscussionService", () => {
     db = createCollabDatabase(":memory:");
     events = new EventService(db, clock);
     const agents = new AgentProfileService(db, events, clock);
-    sessions = new SessionService(db, events, clock);
+    const launchRequests = new LaunchRequestService(db, events, clock);
+    sessions = new SessionService(db, events, launchRequests, clock);
     handoffs = new HandoffService(db, events, clock);
     discussions = new DiscussionService(db, events, clock);
 

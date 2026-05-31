@@ -979,9 +979,9 @@ export function createVaultCollabMcpTools(
   const ownsDb = !options.db;
   const events = new EventService(db, options.clock);
   const agents = new AgentProfileService(db, events, options.clock);
-  const sessions = new SessionService(db, events, options.clock);
-  const handoffs = new HandoffService(db, events, options.clock);
   const launchRequests = new LaunchRequestService(db, events, options.clock);
+  const sessions = new SessionService(db, events, launchRequests, options.clock);
+  const handoffs = new HandoffService(db, events, options.clock);
   const discussions = new DiscussionService(db, events, options.clock);
   const handoffDetails = new HandoffDetailService(handoffs, events, sessions, discussions);
   const attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);

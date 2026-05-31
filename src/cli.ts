@@ -592,9 +592,9 @@ function createServices(dbPath: string): Services {
   const db = createCollabDatabase(dbPath);
   const events = new EventService(db);
   const agents = new AgentProfileService(db, events);
-  const sessions = new SessionService(db, events);
-  const handoffs = new HandoffService(db, events);
   const launchRequests = new LaunchRequestService(db, events);
+  const sessions = new SessionService(db, events, launchRequests);
+  const handoffs = new HandoffService(db, events);
   const discussions = new DiscussionService(db, events);
   const attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);
 

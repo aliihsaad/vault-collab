@@ -3,6 +3,7 @@ import { createCollabDatabase, type CollabDatabase } from "../src/database/conne
 import { AgentProfileService } from "../src/services/agent-profile.service.js";
 import { EventService } from "../src/services/event.service.js";
 import { HandoffService } from "../src/services/handoff.service.js";
+import { LaunchRequestService } from "../src/services/launch-request.service.js";
 import { SessionService } from "../src/services/session.service.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
@@ -21,7 +22,8 @@ describe("SessionService", () => {
     const clock = () => now;
     events = new EventService(db, clock);
     agents = new AgentProfileService(db, events, clock);
-    service = new SessionService(db, events, clock);
+    const launchRequests = new LaunchRequestService(db, events, clock);
+    service = new SessionService(db, events, launchRequests, clock);
     handoffs = new HandoffService(db, events, clock);
   });
 

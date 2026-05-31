@@ -3,6 +3,7 @@ import type { CollabDatabase } from "../database/connection.js";
 import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
+import type { LaunchRequestService } from "./launch-request.service.js";
 import type {
   ClientType,
   EventRecord,
@@ -73,6 +74,7 @@ export class SessionService {
   constructor(
     private readonly db: CollabDatabase,
     private readonly events: EventService,
+    private readonly launchRequests: LaunchRequestService,
     private readonly clock: () => Date = () => new Date()
   ) {}
 
@@ -322,22 +324,30 @@ export class SessionService {
   disconnectSession(sessionUid: string, sessionToken: string): RegisteredSession {
     this.assertOwnedSession(sessionUid, sessionToken);
     const now = this.now();
-    this.db
-      .prepare(
+    const disconnect = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          UPDATE sessions
+          SET status = ?, status_detail = ?, updated_at = ?, disconnected_at = ?
+          WHERE session_uid = ?
         `
-        UPDATE sessions
-        SET status = ?, status_detail = ?, updated_at = ?, disconnected_at = ?
-        WHERE session_uid = ?
-      `
-      )
-      .run("disconnected", null, now, now, sessionUid);
-    this.expireClaimedHandoffLeases(sessionUid, now);
+        )
+        .run("disconnected", null, now, now, sessionUid);
+      this.expireClaimedHandoffLeases(sessionUid, now);
+      this.launchRequests.stopLaunchRequestsForSession(
+        sessionUid,
+        "Session disconnected.",
+        now
+      );
 
-    this.events.recordEvent({
-      eventType: "session.disconnected",
-      sessionUid,
-      payload: {}
+      this.events.recordEvent({
+        eventType: "session.disconnected",
+        sessionUid,
+        payload: {}
+      });
     });
+    disconnect();
 
     return this.requireSession(sessionUid);
   }
@@ -388,28 +398,36 @@ export class SessionService {
 
     const now = this.now();
     const statusDetail = reason?.trim() ? reason.trim() : null;
-    this.db
-      .prepare(
+    const disconnect = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          UPDATE sessions
+          SET status = ?,
+              status_detail = ?,
+              updated_at = ?,
+              disconnected_at = ?
+          WHERE session_uid = ?
         `
-        UPDATE sessions
-        SET status = ?,
-            status_detail = ?,
-            updated_at = ?,
-            disconnected_at = ?
-        WHERE session_uid = ?
-      `
-      )
-      .run("disconnected", statusDetail, now, now, targetSessionUid);
-    this.expireClaimedHandoffLeases(targetSessionUid, now);
+        )
+        .run("disconnected", statusDetail, now, now, targetSessionUid);
+      this.expireClaimedHandoffLeases(targetSessionUid, now);
+      this.launchRequests.stopLaunchRequestsForSession(
+        targetSessionUid,
+        statusDetail ?? "Session disconnected.",
+        now
+      );
 
-    this.events.recordEvent({
-      eventType: "session.disconnected",
-      sessionUid: targetSessionUid,
-      payload: {
-        actorSessionUid,
-        reason: statusDetail
-      }
+      this.events.recordEvent({
+        eventType: "session.disconnected",
+        sessionUid: targetSessionUid,
+        payload: {
+          actorSessionUid,
+          reason: statusDetail
+        }
+      });
     });
+    disconnect();
 
     return this.requirePublicSession(targetSessionUid);
   }
@@ -716,6 +734,11 @@ export class SessionService {
           row.session_uid
         );
         this.expireClaimedHandoffLeases(row.session_uid, now);
+        this.launchRequests.stopLaunchRequestsForSession(
+          row.session_uid,
+          "Disconnected after stale heartbeat.",
+          now
+        );
         this.events.recordEvent({
           eventType: "session.disconnected",
           sessionUid: row.session_uid,

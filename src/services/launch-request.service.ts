@@ -66,12 +66,88 @@ const cancellableStatuses: LaunchRequestStatus[] = ["requested", "approved"];
 const stoppableStatuses: LaunchRequestStatus[] = ["launching", "running"];
 const failableStatuses: LaunchRequestStatus[] = ["approved", "launching", "running"];
 
+export function stopLaunchRequestsForSession(
+  db: CollabDatabase,
+  events: EventService,
+  sessionUid: string,
+  reason: string,
+  stoppedAt: string
+): string[] {
+  const rows = db
+    .prepare(
+      `
+      SELECT launch_request_uid, status
+      FROM launch_requests
+      WHERE launched_session_uid = ?
+        AND status IN (${stoppableStatuses.map(() => "?").join(", ")})
+      ORDER BY created_at ASC, launch_request_uid ASC
+    `
+    )
+    .all(sessionUid, ...stoppableStatuses) as Array<{
+      launch_request_uid: string;
+      status: LaunchRequestStatus;
+    }>;
+
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const update = db.prepare(
+    `
+    UPDATE launch_requests
+    SET status = ?,
+        status_detail = ?,
+        updated_at = ?,
+        completed_at = ?
+    WHERE launch_request_uid = ?
+      AND status IN (${stoppableStatuses.map(() => "?").join(", ")})
+  `
+  );
+  const stoppedLaunchRequestUids: string[] = [];
+
+  for (const row of rows) {
+    const result = update.run(
+      "stopped",
+      reason,
+      stoppedAt,
+      stoppedAt,
+      row.launch_request_uid,
+      ...stoppableStatuses
+    );
+    if (result.changes !== 1) {
+      continue;
+    }
+
+    stoppedLaunchRequestUids.push(row.launch_request_uid);
+    events.recordEvent({
+      eventType: "launch_request.stopped",
+      sessionUid,
+      payload: {
+        launchRequestUid: row.launch_request_uid,
+        previousStatus: row.status,
+        reason,
+        cascadedFromSessionUid: sessionUid
+      }
+    });
+  }
+
+  return stoppedLaunchRequestUids;
+}
+
 export class LaunchRequestService {
   constructor(
     private readonly db: CollabDatabase,
     private readonly events: EventService,
     private readonly clock: () => Date = () => new Date()
   ) {}
+
+  stopLaunchRequestsForSession(
+    sessionUid: string,
+    reason: string,
+    stoppedAt: string = this.now()
+  ): string[] {
+    return stopLaunchRequestsForSession(this.db, this.events, sessionUid, reason, stoppedAt);
+  }
 
   createLaunchRequest(input: CreateLaunchRequestInput): LaunchRequestRecord {
     this.assertNonEmpty(input.model, "Launch request model");
