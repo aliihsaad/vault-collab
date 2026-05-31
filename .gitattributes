@@ -1,0 +1,4 @@
+# Keep TypeScript sources LF so the built CLI/MCP shebangs stay valid on
+# Linux/macOS (a CRLF "#!/usr/bin/env node\r" breaks execution) and so
+# packaging tests are deterministic regardless of git core.autocrlf.
+*.ts text eol=lf
