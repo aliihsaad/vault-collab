@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCollabDatabase, type CollabDatabase } from "../src/database/connection.js";
 import { AgentProfileService } from "../src/services/agent-profile.service.js";
 import { EventService } from "../src/services/event.service.js";
+import { HandoffService } from "../src/services/handoff.service.js";
 import { SessionService } from "../src/services/session.service.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
@@ -12,6 +13,7 @@ describe("SessionService", () => {
   let events: EventService;
   let agents: AgentProfileService;
   let service: SessionService;
+  let handoffs: HandoffService;
 
   beforeEach(() => {
     now = new Date("2026-05-28T10:00:00.000Z");
@@ -20,6 +22,7 @@ describe("SessionService", () => {
     events = new EventService(db, clock);
     agents = new AgentProfileService(db, events, clock);
     service = new SessionService(db, events, clock);
+    handoffs = new HandoffService(db, events, clock);
   });
 
   afterEach(() => {
@@ -169,6 +172,31 @@ describe("SessionService", () => {
     expect(service.listSessions()[0].lastHeartbeatAt).toBe("2026-05-28T10:00:30.000Z");
     expect(() => service.heartbeatSession(registered.sessionUid, "wrong-token")).toThrow(
       /invalid session token/i
+    );
+  });
+
+  it("refreshes leases of claimed handoffs on heartbeat", () => {
+    const registered = service.registerSession({
+      displayName: "Claude Code",
+      clientType: "claude-code",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Heartbeat lease",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, registered.sessionUid, registered.sessionToken);
+    const firstLease = handoffs.getHandoff(handoff.handoffUid)?.leaseExpiresAt;
+
+    now = new Date("2026-05-28T10:01:00.000Z");
+    service.heartbeatSession(registered.sessionUid, registered.sessionToken);
+
+    const secondLease = handoffs.getHandoff(handoff.handoffUid)?.leaseExpiresAt;
+    expect(new Date(secondLease!).getTime()).toBeGreaterThan(
+      new Date(firstLease!).getTime()
     );
   });
 
@@ -480,6 +508,29 @@ describe("SessionService", () => {
       status: "disconnected",
       disconnectedAt: "2026-05-28T10:02:00.000Z"
     });
+  });
+
+  it("expires claimed handoff leases immediately when a session disconnects", () => {
+    const registered = service.registerSession({
+      displayName: "Octogent",
+      clientType: "octogent",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Disconnect lease",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, registered.sessionUid, registered.sessionToken);
+
+    now = new Date("2026-05-28T10:02:00.000Z");
+    service.disconnectSession(registered.sessionUid, registered.sessionToken);
+
+    expect(handoffs.getHandoff(handoff.handoffUid)?.leaseExpiresAt).toBe(
+      "2026-05-28T10:02:00.000Z"
+    );
   });
 
   it("renames a session with the owning session token", () => {

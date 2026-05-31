@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type {
@@ -48,6 +49,14 @@ interface SessionOwnerRow {
   session_token: string;
   capabilities_json: string;
 }
+
+const leasedHandoffStatuses = [
+  "claimed",
+  "in_progress",
+  "blocked",
+  "awaiting_user",
+  "verification_needed"
+] as const;
 
 export class SessionService {
   constructor(
@@ -182,6 +191,7 @@ export class SessionService {
       `
       )
       .run(now, now, sessionUid);
+    this.refreshClaimedHandoffLeases(sessionUid);
 
     if (recordEvent) {
       this.events.recordEvent({
@@ -294,6 +304,7 @@ export class SessionService {
       `
       )
       .run("disconnected", null, now, now, sessionUid);
+    this.expireClaimedHandoffLeases(sessionUid, now);
 
     this.events.recordEvent({
       eventType: "session.disconnected",
@@ -362,6 +373,7 @@ export class SessionService {
       `
       )
       .run("disconnected", statusDetail, now, now, targetSessionUid);
+    this.expireClaimedHandoffLeases(targetSessionUid, now);
 
     this.events.recordEvent({
       eventType: "session.disconnected",
@@ -481,6 +493,36 @@ export class SessionService {
       delivered: false,
       nextStep: "Receiver is not verified; start a watcher or use a wakeable managed session."
     };
+  }
+
+  private refreshClaimedHandoffLeases(sessionUid: string): void {
+    this.db
+      .prepare(
+        `
+        UPDATE handoffs
+        SET lease_expires_at = ?
+        WHERE claimed_by_session_uid = ?
+          AND status IN (${leasedHandoffStatuses.map(() => "?").join(", ")})
+      `
+      )
+      .run(this.leaseExpiresAt(), sessionUid, ...leasedHandoffStatuses);
+  }
+
+  private expireClaimedHandoffLeases(sessionUid: string, expiresAt: string): void {
+    this.db
+      .prepare(
+        `
+        UPDATE handoffs
+        SET lease_expires_at = ?
+        WHERE claimed_by_session_uid = ?
+          AND status IN (${leasedHandoffStatuses.map(() => "?").join(", ")})
+      `
+      )
+      .run(expiresAt, sessionUid, ...leasedHandoffStatuses);
+  }
+
+  private leaseExpiresAt(): string {
+    return new Date(this.clock().getTime() + getLeaseTtlMs()).toISOString();
   }
 
   private requireSession(sessionUid: string): RegisteredSession {
