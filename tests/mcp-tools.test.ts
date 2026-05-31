@@ -34,6 +34,12 @@ function schemaField(toolName: string, key: string): { safeParse: (value: unknow
   return field as { safeParse: (value: unknown) => { success: boolean } };
 }
 
+function toolDescription(toolName: string): string {
+  const definition = vaultCollabToolDefinitions.find((tool) => tool.name === toolName);
+  expect(definition).toBeDefined();
+  return definition?.description ?? "";
+}
+
 describe("Vault Collab MCP tools", () => {
   let dbPath: string;
   let cwd: string;
@@ -433,6 +439,31 @@ describe("Vault Collab MCP tools", () => {
     expect(register?.description).toMatch(/after registering/i);
     expect(inbox?.description).toMatch(/project queue snapshot/i);
     expect(inbox?.description).toMatch(/vault_collab_get_session_attention/);
+  });
+
+  it("marks wake and broker execution tools deprecated without deprecating launch coordination", () => {
+    const deprecatedTools = [
+      "vault_collab_ping_session",
+      "vault_collab_list_attention_delivery_attempts",
+      "vault_collab_mark_launch_request_launching",
+      "vault_collab_mark_launch_request_running",
+      "vault_collab_mark_launch_request_stopped",
+      "vault_collab_fail_launch_request"
+    ];
+    const coordinationTools = [
+      "vault_collab_create_launch_request",
+      "vault_collab_approve_launch_request",
+      "vault_collab_reject_launch_request",
+      "vault_collab_cancel_launch_request"
+    ];
+
+    for (const toolName of deprecatedTools) {
+      expect(toolDescription(toolName)).toMatch(/^\[DEPRECATED .*vault_collab_receive\]/);
+    }
+
+    for (const toolName of coordinationTools) {
+      expect(toolDescription(toolName)).not.toMatch(/^\[DEPRECATED/);
+    }
   });
 
   it("advertises only progress statuses for update_handoff", () => {

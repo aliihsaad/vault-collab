@@ -18,6 +18,11 @@ export type SessionStatus =
 
 export type JsonRecord = Record<string, unknown>;
 
+/**
+ * @deprecated Push/wake delivery modes are superseded by the pull-based receive
+ * loop. Keep these values for dashboard compatibility until the push broker is
+ * removed in a later migration.
+ */
 export type SessionDeliveryMode =
   | "manual_poll"
   | "local_watch"
@@ -320,6 +325,11 @@ export interface LaunchRequestDetail {
   events: EventRecord[];
 }
 
+/**
+ * @deprecated Broker execution transitions are superseded by pull-based session
+ * coordination. Creation, approval, rejection, and cancellation remain active
+ * control-plane coordination records.
+ */
 export type LaunchRequestActionKind =
   | "approve"
   | "reject"

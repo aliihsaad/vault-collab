@@ -125,7 +125,8 @@ Commit: `docs: add pull-based work-loop to agent guide`.
 **Files:** `src/services/attention-receiver.service.ts`, `src/mcp/tools.ts`, `src/types.ts`, `docs/`.
 
 - Add a file-top `@deprecated` JSDoc banner to `attention-receiver.service.ts` explaining it is superseded by the pull model and slated for removal after The Vault dashboard migrates (sub-project #3). Do not change its behavior or delete it.
-- In `mcp/tools.ts`, prefix the *descriptions* of broker/wake tools with `[DEPRECATED — use vault_collab_receive]`: `ping_session`, `list_attention_delivery_attempts`, and the launch-request lifecycle tools (`create/approve/reject/cancel/fail/mark_launching/mark_running/mark_stopped` launch_request). Keep the tools registered and functional so the current dashboard does not break.
+- In `mcp/tools.ts`, prefix the *descriptions* of the **wake/managed-execution** tools with `[DEPRECATED — use vault_collab_receive]`: `ping_session`, `list_attention_delivery_attempts`, and the launch-request **execution** lifecycle (`mark_launching`, `mark_running`, `mark_stopped`, `fail` launch_request). Keep all tools registered and functional so the current dashboard does not break.
+  - **Do NOT deprecate** `create_launch_request`, `approve_launch_request`, `reject_launch_request`, `cancel_launch_request`. Those are the coordination signal "an agent requests a new agent; a human approves/rejects" — sub-project #2 (The Vault repo) builds on them. They are pure control-plane state, not fragile execution. Leave their descriptions intact.
 - Add a short `docs/pull-vs-push.md` (or append to the existing agent-guide doc) recording the migration intent: pull is canonical; broker is deprecated-in-place; removal is gated on dashboard migration.
 
 No behavior change ⇒ no new failing test required; ensure the full suite still passes and descriptions render in `tests/mcp-tools.test.ts` if it snapshots tool descriptions (update snapshots intentionally).

@@ -219,6 +219,8 @@ const discussionMessageTypeValues = [
   "system"
 ] as const satisfies readonly DiscussionMessageType[];
 
+const deprecatedReceivePrefix = "[DEPRECATED - use vault_collab_receive] ";
+
 const clientTypeSchema = z.enum(clientTypeValues);
 const sessionStatusSchema = z.enum(sessionStatusValues);
 const sessionDeliveryModeSchema = z.enum(sessionDeliveryModeValues);
@@ -675,7 +677,7 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     name: "vault_collab_ping_session",
     title: "Ping Session",
     description:
-      "Record a soft attention ping for a non-terminal session without waking, interrupting, or auto-claiming.",
+      `${deprecatedReceivePrefix}Record a soft attention ping for a non-terminal session without waking, interrupting, or auto-claiming.`,
     inputSchema: pingSessionInputSchema
   },
   {
@@ -706,7 +708,8 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
   {
     name: "vault_collab_list_attention_delivery_attempts",
     title: "List Attention Delivery Attempts",
-    description: "List token-safe receiver delivery attempts for dashboard delivery history and failure reasons.",
+    description:
+      `${deprecatedReceivePrefix}List token-safe receiver delivery attempts for dashboard delivery history and failure reasons.`,
     inputSchema: listAttentionDeliveryAttemptsInputSchema
   },
   {
@@ -782,27 +785,28 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     name: "vault_collab_mark_launch_request_launching",
     title: "Mark Launch Request Launching",
     description:
-      "Move an approved launch request to launching when the actor has launchBroker capability. This does not spawn a process.",
+      `${deprecatedReceivePrefix}Move an approved launch request to launching when the actor has launchBroker capability. This does not spawn a process.`,
     inputSchema: markLaunchRequestLaunchingInputSchema
   },
   {
     name: "vault_collab_mark_launch_request_running",
     title: "Mark Launch Request Running",
     description:
-      "Attach an already registered launched session to a launching request when the actor has launchBroker capability.",
+      `${deprecatedReceivePrefix}Attach an already registered launched session to a launching request when the actor has launchBroker capability.`,
     inputSchema: markLaunchRequestRunningInputSchema
   },
   {
     name: "vault_collab_mark_launch_request_stopped",
     title: "Mark Launch Request Stopped",
     description:
-      "Mark a launching or running launch request stopped after a managed worker exits normally or by user stop.",
+      `${deprecatedReceivePrefix}Mark a launching or running launch request stopped after a managed worker exits normally or by user stop.`,
     inputSchema: markLaunchRequestStoppedInputSchema
   },
   {
     name: "vault_collab_fail_launch_request",
     title: "Fail Launch Request",
-    description: "Mark an approved, launching, or running launch request failed as a launch broker.",
+    description:
+      `${deprecatedReceivePrefix}Mark an approved, launching, or running launch request failed as a launch broker.`,
     inputSchema: failLaunchRequestInputSchema
   },
   {
