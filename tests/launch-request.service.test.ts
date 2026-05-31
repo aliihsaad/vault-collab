@@ -305,6 +305,63 @@ describe("LaunchRequestService", () => {
     ).toThrow(/requested/i);
   });
 
+  it("self-links approved copy-command launches when the launched session registers", () => {
+    const request = service.createLaunchRequest({
+      requestedBySessionUid: requester.sessionUid,
+      sessionToken: requester.sessionToken,
+      provider: "codex",
+      model: "gpt-5-codex",
+      effortLevel: "xhigh",
+      project: "Vault Collab",
+      workspacePath,
+      role: "launch-self-link-executor",
+      initialInstructions: "Register with Vault Collab and claim the handoff.",
+      permissionMode: "workspace-write",
+      commandPreview: "codex --no-alt-screen -C C:\\workspace\\vault-collab"
+    });
+    service.approveLaunchRequest(
+      request.launchRequestUid,
+      approver.sessionUid,
+      approver.sessionToken,
+      "Approved for copy-command launch."
+    );
+
+    now = new Date("2026-05-30T09:02:00.000Z");
+    const launched = sessions.registerSession({
+      displayName: "Copy-command Codex",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {
+        launchRequestUid: request.launchRequestUid
+      }
+    });
+
+    expect(launched.capabilities).toMatchObject({
+      launchRequestUid: request.launchRequestUid,
+      launchedBy: request.launchRequestUid
+    });
+    expect(service.getLaunchRequest(request.launchRequestUid)).toMatchObject({
+      status: "running",
+      statusDetail: "Launched session self-associated on registration.",
+      brokerSessionUid: null,
+      launchedSessionUid: launched.sessionUid,
+      startedAt: "2026-05-30T09:02:00.000Z",
+      updatedAt: "2026-05-30T09:02:00.000Z",
+      completedAt: null
+    });
+
+    const runningEvents = events
+      .listEvents({ sessionUid: launched.sessionUid, eventType: "launch_request.running" })
+      .filter((event) => event.payload.launchRequestUid === request.launchRequestUid);
+    expect(runningEvents).toHaveLength(1);
+    expect(runningEvents[0].payload).toMatchObject({
+      launchRequestUid: request.launchRequestUid,
+      launchedSessionUid: launched.sessionUid,
+      selfAssociated: true
+    });
+  });
+
   it("describes owner-token-aware launch request actions for dashboards", () => {
     const request = service.createLaunchRequest({
       requestedBySessionUid: requester.sessionUid,

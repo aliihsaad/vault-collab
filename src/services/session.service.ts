@@ -7,6 +7,7 @@ import type {
   ClientType,
   EventRecord,
   JsonRecord,
+  LaunchRequestStatus,
   PermissionRequestInput,
   PingSessionInput,
   PingSessionResult,
@@ -51,6 +52,15 @@ interface SessionOwnerRow {
   capabilities_json: string;
 }
 
+interface LaunchRequestSelfLinkRow {
+  launch_request_uid: string;
+  provider: ClientType;
+  project_key: string;
+  workspace_path: string;
+  status: LaunchRequestStatus;
+  launched_session_uid: string | null;
+}
+
 const leasedHandoffStatuses = [
   "claimed",
   "in_progress",
@@ -72,68 +82,82 @@ export class SessionService {
     const sessionToken = randomBytes(32).toString("base64url");
     const deliveryMode = input.delivery?.mode ?? "manual_poll";
     const deliveryWakeable = input.delivery?.wakeable === true ? 1 : 0;
+    const capabilities = this.normalizeLaunchCapabilities(input.capabilities ?? {});
+    const sessionProjectKey = projectKey(input.project);
 
-    this.db
-      .prepare(
+    const register = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          INSERT INTO sessions (
+            session_uid,
+            display_name,
+            client_type,
+            project,
+            project_key,
+            workspace_path,
+            role,
+            status,
+            status_detail,
+            capabilities_json,
+            agent_uid,
+            current_handoff_uid,
+            delivery_mode,
+            delivery_wakeable,
+            delivery_last_ack_event_id,
+            delivery_last_ack_at,
+            session_token,
+            last_heartbeat_at,
+            created_at,
+            updated_at,
+            disconnected_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
-        INSERT INTO sessions (
-          session_uid,
-          display_name,
-          client_type,
-          project,
-          project_key,
-          workspace_path,
-          role,
-          status,
-          status_detail,
-          capabilities_json,
-          agent_uid,
-          current_handoff_uid,
-          delivery_mode,
-          delivery_wakeable,
-          delivery_last_ack_event_id,
-          delivery_last_ack_at,
-          session_token,
-          last_heartbeat_at,
-          created_at,
-          updated_at,
-          disconnected_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-      )
-      .run(
-        sessionUid,
-        input.displayName,
-        input.clientType,
-        input.project,
-        projectKey(input.project),
-        input.workspacePath,
-        this.resolveSessionRole(input),
-        "idle",
-        null,
-        JSON.stringify(input.capabilities ?? {}),
-        input.agentUid ?? null,
-        null,
-        deliveryMode,
-        deliveryWakeable,
-        null,
-        null,
-        sessionToken,
-        now,
-        now,
-        now,
-        null
-      );
+        .run(
+          sessionUid,
+          input.displayName,
+          input.clientType,
+          input.project,
+          sessionProjectKey,
+          input.workspacePath,
+          this.resolveSessionRole(input),
+          "idle",
+          null,
+          JSON.stringify(capabilities),
+          input.agentUid ?? null,
+          null,
+          deliveryMode,
+          deliveryWakeable,
+          null,
+          null,
+          sessionToken,
+          now,
+          now,
+          now,
+          null
+        );
 
-    this.events.recordEvent({
-      eventType: "session.registered",
-      sessionUid,
-      payload: {
+      this.events.recordEvent({
+        eventType: "session.registered",
+        sessionUid,
+        payload: {
+          clientType: input.clientType,
+          project: input.project
+        }
+      });
+
+      this.selfLinkLaunchRequestOnRegister({
+        capabilities,
+        sessionUid,
         clientType: input.clientType,
-        project: input.project
-      }
+        projectKey: sessionProjectKey,
+        workspacePath: input.workspacePath,
+        now
+      });
     });
+    register();
 
     return this.requireSession(sessionUid);
   }
@@ -460,6 +484,127 @@ export class SessionService {
     if (value.trim() === "") {
       throw new Error(`${label} cannot be empty`);
     }
+  }
+
+  private normalizeLaunchCapabilities(capabilities: JsonRecord): JsonRecord {
+    const launchRequestUid = this.explicitLaunchRequestUid(capabilities);
+    if (!launchRequestUid) {
+      return capabilities;
+    }
+
+    return {
+      ...capabilities,
+      launchRequestUid,
+      launchedBy: launchRequestUid
+    };
+  }
+
+  private explicitLaunchRequestUid(capabilities: JsonRecord): string | null {
+    const values = [
+      capabilities.launchRequestUid,
+      capabilities.launch_request_uid
+    ].filter((value): value is string => typeof value === "string" && value.trim() !== "");
+
+    const uniqueValues = new Set(values);
+    if (uniqueValues.size > 1) {
+      throw new Error("Launch request UID capability values must match");
+    }
+
+    const launchRequestUid = values[0] ?? null;
+    if (!launchRequestUid) {
+      return null;
+    }
+
+    if (
+      typeof capabilities.launchedBy === "string" &&
+      capabilities.launchedBy.trim() !== "" &&
+      capabilities.launchedBy !== launchRequestUid
+    ) {
+      throw new Error("Launch request UID capability values must match");
+    }
+
+    return launchRequestUid;
+  }
+
+  private selfLinkLaunchRequestOnRegister(input: {
+    capabilities: JsonRecord;
+    sessionUid: string;
+    clientType: ClientType;
+    projectKey: string;
+    workspacePath: string;
+    now: string;
+  }): void {
+    const launchRequestUid = this.explicitLaunchRequestUid(input.capabilities);
+    if (!launchRequestUid) {
+      return;
+    }
+
+    const row = this.db
+      .prepare(
+        `
+        SELECT launch_request_uid,
+               provider,
+               project_key,
+               workspace_path,
+               status,
+               launched_session_uid
+        FROM launch_requests
+        WHERE launch_request_uid = ?
+      `
+      )
+      .get(launchRequestUid) as LaunchRequestSelfLinkRow | undefined;
+
+    if (!row) {
+      throw new Error(`Launch request not found: ${launchRequestUid}`);
+    }
+
+    if (row.provider !== input.clientType) {
+      throw new Error("Launched session provider does not match launch request");
+    }
+
+    if (row.project_key !== input.projectKey) {
+      throw new Error("Launched session project does not match launch request");
+    }
+
+    if (row.workspace_path !== input.workspacePath) {
+      throw new Error("Launched session workspace path does not match launch request");
+    }
+
+    if (row.launched_session_uid && row.launched_session_uid !== input.sessionUid) {
+      throw new Error("Launch request is already linked to a different launched session");
+    }
+
+    if (row.status !== "approved" && row.status !== "launching") {
+      throw new Error(
+        `Launch request must be approved or launching to self-associate; current status is ${row.status}`
+      );
+    }
+
+    const detail = "Launched session self-associated on registration.";
+    this.db
+      .prepare(
+        `
+        UPDATE launch_requests
+        SET status = ?,
+            status_detail = ?,
+            launched_session_uid = ?,
+            updated_at = ?,
+            started_at = COALESCE(started_at, ?)
+        WHERE launch_request_uid = ?
+      `
+      )
+      .run("running", detail, input.sessionUid, input.now, input.now, launchRequestUid);
+
+    this.events.recordEvent({
+      eventType: "launch_request.running",
+      sessionUid: input.sessionUid,
+      payload: {
+        launchRequestUid,
+        launchedSessionUid: input.sessionUid,
+        detail,
+        selfAssociated: true
+      }
+    });
   }
 
   private permissionRequestPayload(
