@@ -1,3 +1,8 @@
+/**
+ * @deprecated Superseded by the pull-based receive model (`vault_collab_receive`
+ * and CLI `receive --wait`). Keep this service functional until The Vault
+ * dashboard fully migrates away from host-owned push/wake delivery.
+ */
 import { randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
 import type { AttentionService } from "./attention.service.js";

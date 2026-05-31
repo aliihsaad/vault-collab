@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import { progressHandoffStatuses } from "../types.js";
 import type { EventService } from "./event.service.js";
@@ -59,6 +60,13 @@ interface SessionOwnerRow {
 }
 
 const closedInboxStatuses: HandoffStatus[] = ["resolved", "abandoned", "stale"];
+const leasedHandoffStatuses: HandoffStatus[] = [
+  "claimed",
+  "in_progress",
+  "blocked",
+  "awaiting_user",
+  "verification_needed"
+];
 
 function normalizeRelatedProjects(input: PublishHandoffInput): string[] {
   const relatedProjects =
@@ -184,6 +192,8 @@ export class HandoffService {
   }
 
   listInbox(filter: HandoffFilters = {}): HandoffRecord[] {
+    this.sweepExpiredLeases();
+
     const clauses: string[] = [];
     const params: string[] = [];
 
@@ -361,6 +371,84 @@ export class HandoffService {
     return this.requireHandoff(handoffUid);
   }
 
+  sweepExpiredLeases(): string[] {
+    const now = this.now();
+    const sweep = this.db.transaction(() => {
+      const rows = this.db
+        .prepare(
+          `
+          SELECT handoff_uid, claimed_by_session_uid
+          FROM handoffs
+          WHERE lease_expires_at IS NOT NULL
+            AND lease_expires_at <= ?
+            AND status IN (${leasedHandoffStatuses.map(() => "?").join(", ")})
+          ORDER BY lease_expires_at ASC, handoff_uid ASC
+        `
+        )
+        .all(now, ...leasedHandoffStatuses) as Array<{
+        handoff_uid: string;
+        claimed_by_session_uid: string | null;
+      }>;
+
+      if (rows.length === 0) {
+        return [];
+      }
+
+      const release = this.db.prepare(
+        `
+        UPDATE handoffs
+        SET status = ?,
+            claimed_by_session_uid = NULL,
+            claim_token = NULL,
+            lease_expires_at = NULL,
+            progress_note = NULL,
+            updated_at = ?
+        WHERE handoff_uid = ?
+      `
+      );
+      const clearSession = this.db.prepare(
+        `
+        UPDATE sessions
+        SET current_handoff_uid = NULL,
+            status = ?,
+            status_detail = NULL,
+            updated_at = ?
+        WHERE session_uid = ?
+          AND current_handoff_uid = ?
+          AND status NOT IN (?, ?)
+      `
+      );
+
+      for (const row of rows) {
+        release.run("available", now, row.handoff_uid);
+        if (row.claimed_by_session_uid) {
+          clearSession.run(
+            "idle",
+            now,
+            row.claimed_by_session_uid,
+            row.handoff_uid,
+            "complete",
+            "disconnected"
+          );
+        }
+        this.events.recordEvent({
+          eventType: "handoff.lease_expired",
+          handoffUid: row.handoff_uid,
+          sessionUid: null,
+          payload: {
+            priorClaimedBySessionUid: row.claimed_by_session_uid,
+            reason: "lease_expired",
+            sweptAt: now
+          }
+        });
+      }
+
+      return rows.map((row) => row.handoff_uid);
+    });
+
+    return sweep();
+  }
+
   updateHandoffMetadata(
     handoffUid: string,
     sessionUid: string,
@@ -454,13 +542,22 @@ export class HandoffService {
           SET status = ?,
               claimed_by_session_uid = ?,
               claim_token = ?,
+              lease_expires_at = ?,
               updated_at = ?
           WHERE handoff_uid = ?
             AND status = ?
             AND claimed_by_session_uid IS NULL
         `
         )
-        .run("claimed", sessionUid, claimToken, now, handoffUid, "available");
+        .run(
+          "claimed",
+          sessionUid,
+          claimToken,
+          this.leaseExpiresAt(),
+          now,
+          handoffUid,
+          "available"
+        );
 
       if (result.changes !== 1) {
         const current = this.findHandoffRow(handoffUid);
@@ -527,11 +624,11 @@ export class HandoffService {
       .prepare(
         `
         UPDATE handoffs
-        SET status = ?, progress_note = ?, updated_at = ?
+        SET status = ?, progress_note = ?, lease_expires_at = ?, updated_at = ?
         WHERE handoff_uid = ?
       `
       )
-      .run(status, progressNote, now, handoffUid);
+      .run(status, progressNote, this.leaseExpiresAt(), now, handoffUid);
     this.updateSessionWorkState(
       sessionUid,
       this.sessionStatusForHandoffStatus(status),
@@ -1100,6 +1197,10 @@ export class HandoffService {
 
   private now(): string {
     return this.clock().toISOString();
+  }
+
+  private leaseExpiresAt(): string {
+    return new Date(this.clock().getTime() + getLeaseTtlMs()).toISOString();
   }
 
   private nextQueuePosition(targetProject: string, queueKey: string): number {

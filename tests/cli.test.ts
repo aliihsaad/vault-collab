@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.js";
+import { createCollabDatabase } from "../src/database/connection.js";
 
 interface CliResult {
   exitCode: number;
@@ -79,6 +80,8 @@ describe("vault-collab CLI", () => {
     expect(loopText).toMatch(/vault_collab_register_session|register/);
     expect(loopText).toMatch(/vault_collab_get_session_attention|attention/);
     expect(loopText).toMatch(/watch-attention/);
+    expect(loopText).toMatch(/receive --wait|vault_collab_receive/);
+    expect(loopText).toMatch(/pull|drain/i);
     expect(loopText).toMatch(/vault_collab_get_handoff_detail|handoff/);
     expect(loopText).toMatch(/coordinator/i);
     expect(loopText).toMatch(/managed/i);
@@ -578,6 +581,31 @@ describe("vault-collab CLI", () => {
       wakeable: true,
       lastAckEventId: null,
       lastAckAt: null
+    });
+  });
+
+  it("registers a first-class session role from CLI flags", async () => {
+    const session = parseJson<{ role: string; agentRole: string | null }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Reviewer",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--role",
+        "reviewer"
+      ])
+    );
+
+    expect(session).toMatchObject({
+      role: "reviewer",
+      agentRole: null
     });
   });
 
@@ -1189,6 +1217,7 @@ describe("vault-collab CLI", () => {
     const received = parseJson<{
       timedOut: boolean;
       attempt: {
+        attemptUid: string;
         status: string;
         toEventId: number;
         deliveredAt: string | null;
@@ -1243,6 +1272,197 @@ describe("vault-collab CLI", () => {
       message: "Delivered to stdout adapter."
     });
     expect(JSON.stringify(attempts)).not.toContain(worker.sessionToken);
+  });
+
+  it("receives pull-based attention through the CLI and advances the cursor", async () => {
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Pull Receiver",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+
+    const receivePromise = runCli([
+      "receive",
+      worker.sessionUid,
+      "--db",
+      dbPath,
+      "--token",
+      worker.sessionToken,
+      "--wait",
+      "--timeout",
+      "1",
+      "--interval-ms",
+      "20",
+      "--json"
+    ]);
+    await delay(40);
+    const ping = parseJson<{ event: { eventId: number } }>(
+      await runCli([
+        "ping-session",
+        "--db",
+        dbPath,
+        "--target-session-uid",
+        worker.sessionUid,
+        "--message",
+        "Pull this from the CLI."
+      ])
+    );
+
+    const received = parseJson<{
+      fromEventId: number;
+      toEventId: number;
+      drained: boolean;
+      items: Array<{ kind: string; event: { eventId: number } | null }>;
+    }>(await receivePromise);
+    const secondReceive = parseJson<{ items: unknown[] }>(
+      await runCli([
+        "receive",
+        worker.sessionUid,
+        "--db",
+        dbPath,
+        "--token",
+        worker.sessionToken,
+        "--json"
+      ])
+    );
+
+    expect(received).toMatchObject({
+      fromEventId: 0,
+      toEventId: ping.event.eventId,
+      drained: true
+    });
+    expect(received.items).toEqual([
+      expect.objectContaining({
+        kind: "session_ping",
+        event: expect.objectContaining({
+          eventId: ping.event.eventId
+        })
+      })
+    ]);
+    expect(secondReceive.items).toEqual([]);
+    expect(JSON.stringify(received)).not.toContain(worker.sessionToken);
+  });
+
+  it("receive --wait --timeout returns promptly when no attention arrives", async () => {
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Idle Pull Receiver",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const startedAt = Date.now();
+
+    const received = parseJson<{ items: unknown[]; drained: boolean }>(
+      await runCli([
+        "receive",
+        worker.sessionUid,
+        "--db",
+        dbPath,
+        "--token",
+        worker.sessionToken,
+        "--wait",
+        "--timeout",
+        "1",
+        "--interval-ms",
+        "20",
+        "--json"
+      ])
+    );
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(900);
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(received).toMatchObject({
+      items: [],
+      drained: true
+    });
+  });
+
+  it("sweeps expired handoff leases through the CLI", async () => {
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Lease Owner",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const handoff = parseJson<{ handoffUid: string }>(
+      await runCli([
+        "publish",
+        "--db",
+        dbPath,
+        "--short-prompt",
+        "Sweep from CLI",
+        "--source-project",
+        "Vault Collab",
+        "--target-project",
+        "Vault Collab"
+      ])
+    );
+    await runCli([
+      "claim",
+      "--db",
+      dbPath,
+      "--handoff-uid",
+      handoff.handoffUid,
+      "--session-uid",
+      worker.sessionUid,
+      "--session-token",
+      worker.sessionToken
+    ]);
+    const db = createCollabDatabase(dbPath);
+    db.prepare("UPDATE handoffs SET lease_expires_at = ? WHERE handoff_uid = ?").run(
+      "1970-01-01T00:00:00.000Z",
+      handoff.handoffUid
+    );
+    db.close();
+
+    const swept = parseJson<{ released: string[]; count: number }>(
+      await runCli(["sweep-leases", "--db", dbPath])
+    );
+    const leaseEvents = parseJson<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await runCli(["events", "--db", dbPath, "--event-type", "handoff.lease_expired"])
+    );
+
+    expect(swept).toEqual({
+      released: [handoff.handoffUid],
+      count: 1
+    });
+    expect(leaseEvents).toEqual([
+      expect.objectContaining({
+        eventType: "handoff.lease_expired",
+        payload: expect.objectContaining({
+          priorClaimedBySessionUid: worker.sessionUid,
+          reason: "lease_expired"
+        })
+      })
+    ]);
   });
 
   it("runs the launch-request broker lifecycle through flat JSON commands", async () => {

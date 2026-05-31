@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type {
@@ -24,6 +25,7 @@ interface SessionRow {
   project: string;
   project_key: string;
   workspace_path: string;
+  role: string;
   status: SessionStatus;
   status_detail: string | null;
   capabilities_json: string;
@@ -49,6 +51,14 @@ interface SessionOwnerRow {
   capabilities_json: string;
 }
 
+const leasedHandoffStatuses = [
+  "claimed",
+  "in_progress",
+  "blocked",
+  "awaiting_user",
+  "verification_needed"
+] as const;
+
 export class SessionService {
   constructor(
     private readonly db: CollabDatabase,
@@ -73,6 +83,7 @@ export class SessionService {
           project,
           project_key,
           workspace_path,
+          role,
           status,
           status_detail,
           capabilities_json,
@@ -88,7 +99,7 @@ export class SessionService {
           updated_at,
           disconnected_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -98,6 +109,7 @@ export class SessionService {
         input.project,
         projectKey(input.project),
         input.workspacePath,
+        this.resolveSessionRole(input),
         "idle",
         null,
         JSON.stringify(input.capabilities ?? {}),
@@ -182,6 +194,7 @@ export class SessionService {
       `
       )
       .run(now, now, sessionUid);
+    this.refreshClaimedHandoffLeases(sessionUid);
 
     if (recordEvent) {
       this.events.recordEvent({
@@ -294,6 +307,7 @@ export class SessionService {
       `
       )
       .run("disconnected", null, now, now, sessionUid);
+    this.expireClaimedHandoffLeases(sessionUid, now);
 
     this.events.recordEvent({
       eventType: "session.disconnected",
@@ -362,6 +376,7 @@ export class SessionService {
       `
       )
       .run("disconnected", statusDetail, now, now, targetSessionUid);
+    this.expireClaimedHandoffLeases(targetSessionUid, now);
 
     this.events.recordEvent({
       eventType: "session.disconnected",
@@ -376,6 +391,8 @@ export class SessionService {
   }
 
   listSessions(filter: SessionFilters = {}): SessionSnapshot[] {
+    this.disconnectStaleSessions();
+
     const clauses: string[] = [];
     const params: string[] = [];
 
@@ -411,8 +428,14 @@ export class SessionService {
   }
 
   getSession(sessionUid: string): SessionSnapshot | null {
+    this.disconnectStaleSessions();
+
     const row = this.findSessionRow(sessionUid);
     return row ? this.mapPublicSession(row) : null;
+  }
+
+  getOwnedSession(sessionUid: string, sessionToken: string): SessionSnapshot {
+    return this.mapPublicSession(this.assertOwnedSession(sessionUid, sessionToken));
   }
 
   private assertOwnedSession(sessionUid: string, sessionToken: string): SessionRow {
@@ -479,6 +502,89 @@ export class SessionService {
     };
   }
 
+  private refreshClaimedHandoffLeases(sessionUid: string): void {
+    this.db
+      .prepare(
+        `
+        UPDATE handoffs
+        SET lease_expires_at = ?
+        WHERE claimed_by_session_uid = ?
+          AND status IN (${leasedHandoffStatuses.map(() => "?").join(", ")})
+      `
+      )
+      .run(this.leaseExpiresAt(), sessionUid, ...leasedHandoffStatuses);
+  }
+
+  private expireClaimedHandoffLeases(sessionUid: string, expiresAt: string): void {
+    this.db
+      .prepare(
+        `
+        UPDATE handoffs
+        SET lease_expires_at = ?
+        WHERE claimed_by_session_uid = ?
+          AND status IN (${leasedHandoffStatuses.map(() => "?").join(", ")})
+      `
+      )
+      .run(expiresAt, sessionUid, ...leasedHandoffStatuses);
+  }
+
+  private leaseExpiresAt(): string {
+    return new Date(this.clock().getTime() + getLeaseTtlMs()).toISOString();
+  }
+
+  private disconnectStaleSessions(): void {
+    const now = this.now();
+    const staleBefore = new Date(this.clock().getTime() - getLeaseTtlMs()).toISOString();
+    const rows = this.db
+      .prepare(
+        `
+        SELECT session_uid
+        FROM sessions
+        WHERE last_heartbeat_at < ?
+          AND status NOT IN (?, ?)
+      `
+      )
+      .all(staleBefore, "complete", "disconnected") as Array<{ session_uid: string }>;
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    const disconnect = this.db.transaction(() => {
+      const updateSession = this.db.prepare(
+        `
+        UPDATE sessions
+        SET status = ?,
+            status_detail = ?,
+            updated_at = ?,
+            disconnected_at = ?
+        WHERE session_uid = ?
+      `
+      );
+
+      for (const row of rows) {
+        updateSession.run(
+          "disconnected",
+          "Disconnected after stale heartbeat.",
+          now,
+          now,
+          row.session_uid
+        );
+        this.expireClaimedHandoffLeases(row.session_uid, now);
+        this.events.recordEvent({
+          eventType: "session.disconnected",
+          sessionUid: row.session_uid,
+          payload: {
+            reason: "stale_heartbeat",
+            staleBefore
+          }
+        });
+      }
+    });
+
+    disconnect();
+  }
+
   private requireSession(sessionUid: string): RegisteredSession {
     const row = this.findSessionRow(sessionUid);
     if (!row) {
@@ -524,6 +630,7 @@ export class SessionService {
       clientType: row.client_type,
       project: row.project,
       workspacePath: row.workspace_path,
+      role: row.role,
       status: row.status,
       statusDetail: row.status_detail,
       capabilities: JSON.parse(row.capabilities_json) as JsonRecord,
@@ -558,6 +665,7 @@ export class SessionService {
           sessions.project,
           sessions.project_key,
           sessions.workspace_path,
+          sessions.role,
           sessions.status,
           sessions.status_detail,
           sessions.capabilities_json,
@@ -576,5 +684,26 @@ export class SessionService {
           sessions.updated_at,
           sessions.disconnected_at
     `;
+  }
+
+  private resolveSessionRole(input: RegisterSessionInput): string {
+    const explicitRole = input.role?.trim();
+    if (explicitRole !== undefined) {
+      if (explicitRole === "") {
+        throw new Error("Session role cannot be empty");
+      }
+      return explicitRole;
+    }
+
+    if (input.agentUid) {
+      const profile = this.db
+        .prepare("SELECT role FROM agent_profiles WHERE agent_uid = ?")
+        .get(input.agentUid) as { role: string } | undefined;
+      if (profile?.role) {
+        return profile.role;
+      }
+    }
+
+    return "implementer";
   }
 }

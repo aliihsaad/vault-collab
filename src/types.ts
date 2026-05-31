@@ -18,6 +18,11 @@ export type SessionStatus =
 
 export type JsonRecord = Record<string, unknown>;
 
+/**
+ * @deprecated Push/wake delivery modes are superseded by the pull-based receive
+ * loop. Keep these values for dashboard compatibility until the push broker is
+ * removed in a later migration.
+ */
 export type SessionDeliveryMode =
   | "manual_poll"
   | "local_watch"
@@ -85,6 +90,7 @@ export interface RegisterSessionInput {
   clientType: ClientType;
   project: string;
   workspacePath: string;
+  role?: string;
   capabilities?: JsonRecord;
   agentUid?: string | null;
   delivery?: {
@@ -99,6 +105,7 @@ export interface SessionSnapshot {
   clientType: ClientType;
   project: string;
   workspacePath: string;
+  role: string;
   status: SessionStatus;
   statusDetail: string | null;
   capabilities: JsonRecord;
@@ -185,6 +192,23 @@ export interface SessionAttentionFeed {
   sinceEventId: number;
   latestEventId: number;
   items: SessionAttentionItem[];
+}
+
+export interface ReceiveOptions extends SessionAttentionOptions {
+  advanceCursor?: boolean;
+}
+
+export interface WaitForAttentionOptions extends ReceiveOptions {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
+export interface ReceiveResult {
+  session: SessionSnapshot;
+  fromEventId: number;
+  toEventId: number;
+  items: SessionAttentionItem[];
+  drained: boolean;
 }
 
 export interface AttentionDeliveryBatch {
@@ -301,6 +325,11 @@ export interface LaunchRequestDetail {
   events: EventRecord[];
 }
 
+/**
+ * @deprecated Broker execution transitions are superseded by pull-based session
+ * coordination. Creation, approval, rejection, and cancellation remain active
+ * control-plane coordination records.
+ */
 export type LaunchRequestActionKind =
   | "approve"
   | "reject"
@@ -399,6 +428,10 @@ export interface HandoffRecord {
   priority: HandoffPriority;
   urgent: boolean;
   claimedBySessionUid: string | null;
+  /**
+   * ISO timestamp for the claim lease. Defaults to now + VAULT_COLLAB_LEASE_TTL_MS,
+   * or five minutes when the environment variable is unset or invalid.
+   */
   leaseExpiresAt: string | null;
   progressNote: string | null;
   resolutionSummary: string | null;

@@ -10,6 +10,10 @@ import type { RegisteredSession } from "../src/types.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 describe("AttentionService", () => {
   let db: CollabDatabase;
   let now: Date;
@@ -47,6 +51,7 @@ describe("AttentionService", () => {
       clientType: "claude-code",
       project: "Vault Collab",
       workspacePath,
+      role: "reviewer",
       capabilities: {}
     });
   });
@@ -111,6 +116,7 @@ describe("AttentionService", () => {
     const feed = attention.getSessionAttention(worker.sessionUid);
 
     expect(feed.session.sessionUid).toBe(worker.sessionUid);
+    expect(feed.session.role).toBe("reviewer");
     expect(feed.latestEventId).toBeGreaterThan(0);
     expect(feed.items.map((item) => item.kind)).toEqual(
       expect.arrayContaining([
@@ -321,5 +327,142 @@ describe("AttentionService", () => {
 
     expect(launchItems).toHaveLength(1);
     expect(JSON.stringify(feed)).not.toContain(coordinator.sessionToken);
+  });
+
+  it("lazily sweeps expired handoff leases before building attention", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Expired attention claim",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, coordinator.sessionUid, coordinator.sessionToken);
+    db.prepare("UPDATE handoffs SET lease_expires_at = ? WHERE handoff_uid = ?").run(
+      "1970-01-01T00:00:00.000Z",
+      handoff.handoffUid
+    );
+
+    const feed = attention.getSessionAttention(worker.sessionUid);
+
+    expect(handoffs.getHandoff(handoff.handoffUid)).toMatchObject({
+      status: "available",
+      claimedBySessionUid: null
+    });
+    expect(feed.items).toContainEqual(
+      expect.objectContaining({
+        kind: "available_handoff",
+        handoff: expect.objectContaining({
+          handoffUid: handoff.handoffUid,
+          status: "available"
+        })
+      })
+    );
+  });
+
+  it("receives new attention once and advances the session cursor", () => {
+    const ping = sessions.pingSession(worker.sessionUid, {
+      actorSessionUid: coordinator.sessionUid,
+      message: "Pull this ping."
+    });
+
+    const received = attention.receiveOnce(worker.sessionUid, worker.sessionToken, {
+      includeCurrentHandoffs: false
+    });
+    const secondReceive = attention.receiveOnce(worker.sessionUid, worker.sessionToken, {
+      includeCurrentHandoffs: false
+    });
+
+    expect(received).toMatchObject({
+      fromEventId: 0,
+      toEventId: ping.event.eventId,
+      drained: true
+    });
+    expect(received.items).toEqual([
+      expect.objectContaining({
+        kind: "session_ping",
+        event: expect.objectContaining({
+          eventId: ping.event.eventId
+        })
+      })
+    ]);
+    expect(sessions.getSession(worker.sessionUid)?.delivery.lastAckEventId).toBe(
+      ping.event.eventId
+    );
+    expect(secondReceive).toMatchObject({
+      fromEventId: ping.event.eventId,
+      items: [],
+      drained: true
+    });
+    expect(secondReceive.toEventId).toBeGreaterThanOrEqual(ping.event.eventId);
+  });
+
+  it("can receive without advancing the cursor", () => {
+    sessions.pingSession(worker.sessionUid, {
+      actorSessionUid: coordinator.sessionUid,
+      message: "Leave this unread."
+    });
+
+    const received = attention.receiveOnce(worker.sessionUid, worker.sessionToken, {
+      includeCurrentHandoffs: false,
+      advanceCursor: false
+    });
+    const repeated = attention.receiveOnce(worker.sessionUid, worker.sessionToken, {
+      includeCurrentHandoffs: false,
+      advanceCursor: false
+    });
+
+    expect(received.items).toHaveLength(1);
+    expect(repeated.items).toHaveLength(1);
+    expect(sessions.getSession(worker.sessionUid)?.delivery.lastAckEventId).toBeNull();
+  });
+
+  it("waits for attention inserted during the polling window", async () => {
+    const receivedPromise = attention.waitForAttention(worker.sessionUid, worker.sessionToken, {
+      includeCurrentHandoffs: false,
+      timeoutMs: 500,
+      pollIntervalMs: 20
+    });
+
+    await delay(40);
+    const ping = sessions.pingSession(worker.sessionUid, {
+      actorSessionUid: coordinator.sessionUid,
+      message: "Arrived while waiting."
+    });
+
+    const received = await receivedPromise;
+
+    expect(received.toEventId).toBe(ping.event.eventId);
+    expect(received.items).toEqual([
+      expect.objectContaining({
+        kind: "session_ping"
+      })
+    ]);
+    expect(sessions.getSession(worker.sessionUid)?.delivery.lastAckEventId).toBe(
+      ping.event.eventId
+    );
+  });
+
+  it("waits only until timeout and returns an empty drained result when idle", async () => {
+    const startedAt = Date.now();
+
+    const received = await attention.waitForAttention(worker.sessionUid, worker.sessionToken, {
+      includeCurrentHandoffs: false,
+      timeoutMs: 60,
+      pollIntervalMs: 20
+    });
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(50);
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(received).toMatchObject({
+      items: [],
+      drained: true
+    });
+  });
+
+  it("requires the owner token even when no attention is waiting", () => {
+    expect(() =>
+      attention.receiveOnce(worker.sessionUid, "wrong-token", {
+        includeCurrentHandoffs: false
+      })
+    ).toThrow(/invalid session token/i);
   });
 });

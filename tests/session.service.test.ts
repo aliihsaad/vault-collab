@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCollabDatabase, type CollabDatabase } from "../src/database/connection.js";
 import { AgentProfileService } from "../src/services/agent-profile.service.js";
 import { EventService } from "../src/services/event.service.js";
+import { HandoffService } from "../src/services/handoff.service.js";
 import { SessionService } from "../src/services/session.service.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
@@ -12,6 +13,7 @@ describe("SessionService", () => {
   let events: EventService;
   let agents: AgentProfileService;
   let service: SessionService;
+  let handoffs: HandoffService;
 
   beforeEach(() => {
     now = new Date("2026-05-28T10:00:00.000Z");
@@ -20,6 +22,7 @@ describe("SessionService", () => {
     events = new EventService(db, clock);
     agents = new AgentProfileService(db, events, clock);
     service = new SessionService(db, events, clock);
+    handoffs = new HandoffService(db, events, clock);
   });
 
   afterEach(() => {
@@ -59,6 +62,7 @@ describe("SessionService", () => {
       workspacePath,
       status: "idle",
       statusDetail: null,
+      role: "implementer",
       capabilities: {
         handoffs: true,
         maxConcurrentHandoffs: 1
@@ -66,6 +70,23 @@ describe("SessionService", () => {
       disconnectedAt: null
     });
     expect(sessions[0]).not.toHaveProperty("sessionToken");
+  });
+
+  it("round-trips a first-class custom session role", () => {
+    const registered = service.registerSession({
+      displayName: "Reviewer terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "reviewer",
+      capabilities: {}
+    });
+
+    expect(registered.role).toBe("reviewer");
+    expect(service.listSessions()[0]).toMatchObject({
+      sessionUid: registered.sessionUid,
+      role: "reviewer"
+    });
   });
 
   it("defaults manually registered sessions to manual polling delivery", () => {
@@ -104,7 +125,7 @@ describe("SessionService", () => {
       }
     });
 
-    expect(service.requireSession(registered.sessionUid).delivery).toEqual({
+    expect(service.getSession(registered.sessionUid)?.delivery).toEqual({
       mode: "managed_process",
       wakeable: true,
       lastAckEventId: null,
@@ -169,6 +190,31 @@ describe("SessionService", () => {
     expect(service.listSessions()[0].lastHeartbeatAt).toBe("2026-05-28T10:00:30.000Z");
     expect(() => service.heartbeatSession(registered.sessionUid, "wrong-token")).toThrow(
       /invalid session token/i
+    );
+  });
+
+  it("refreshes leases of claimed handoffs on heartbeat", () => {
+    const registered = service.registerSession({
+      displayName: "Claude Code",
+      clientType: "claude-code",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Heartbeat lease",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, registered.sessionUid, registered.sessionToken);
+    const firstLease = handoffs.getHandoff(handoff.handoffUid)?.leaseExpiresAt;
+
+    now = new Date("2026-05-28T10:01:00.000Z");
+    service.heartbeatSession(registered.sessionUid, registered.sessionToken);
+
+    const secondLease = handoffs.getHandoff(handoff.handoffUid)?.leaseExpiresAt;
+    expect(new Date(secondLease!).getTime()).toBeGreaterThan(
+      new Date(firstLease!).getTime()
     );
   });
 
@@ -482,6 +528,29 @@ describe("SessionService", () => {
     });
   });
 
+  it("expires claimed handoff leases immediately when a session disconnects", () => {
+    const registered = service.registerSession({
+      displayName: "Octogent",
+      clientType: "octogent",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Disconnect lease",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, registered.sessionUid, registered.sessionToken);
+
+    now = new Date("2026-05-28T10:02:00.000Z");
+    service.disconnectSession(registered.sessionUid, registered.sessionToken);
+
+    expect(handoffs.getHandoff(handoff.handoffUid)?.leaseExpiresAt).toBe(
+      "2026-05-28T10:02:00.000Z"
+    );
+  });
+
   it("renames a session with the owning session token", () => {
     const registered = service.registerSession({
       displayName: "Codex",
@@ -604,6 +673,39 @@ describe("SessionService", () => {
     expect(service.listSessions({ project: "vault-collab" })).toHaveLength(1);
     expect(service.listSessions({ clientType: "other" })).toHaveLength(1);
     expect(service.listSessions({ project: "Missing" })).toEqual([]);
+  });
+
+  it("marks stale heartbeat sessions disconnected during roster reads", () => {
+    const registered = service.registerSession({
+      displayName: "Stale worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Stale worker claim",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, registered.sessionUid, registered.sessionToken);
+    db.prepare("UPDATE sessions SET last_heartbeat_at = ? WHERE session_uid = ?").run(
+      "2026-05-28T09:00:00.000Z",
+      registered.sessionUid
+    );
+
+    const idleSessions = service.listSessions({ status: "idle" });
+    const disconnected = service.getSession(registered.sessionUid);
+
+    expect(idleSessions).toEqual([]);
+    expect(disconnected).toMatchObject({
+      sessionUid: registered.sessionUid,
+      status: "disconnected",
+      disconnectedAt: "2026-05-28T10:00:00.000Z"
+    });
+    expect(handoffs.getHandoff(handoff.handoffUid)?.leaseExpiresAt).toBe(
+      "2026-05-28T10:00:00.000Z"
+    );
   });
 
   it("routes sessions by persisted project key instead of mutable display label", () => {

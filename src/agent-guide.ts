@@ -28,13 +28,15 @@ export function getAgentOperatingGuide(options: AgentGuideOptions = {}): AgentOp
       "Use Vault Collab as a shared coordination layer. It records sessions, pings, handoffs, launch requests, discussion, and state; it does not wake agents, auto-claim work, spawn processes, or execute tasks.",
     loop: [
       "Read this guide when joining or when the workflow is unclear.",
-      "Register with vault_collab_register_session. CLI equivalent: register.",
+      "Register with vault_collab_register_session and a role such as coordinator, worker, reviewer, planner, or a custom non-empty role. CLI equivalent: register --role <role>.",
       "Use a manually opened terminal session as the coordinator. Claude coordinators join with /vault-collab; Codex coordinators join by prompting `use vault collab`.",
       "Use The Vault dashboard launch requests for worker agents. Dashboard-launched workers are the sessions that should be managed, wakeable, and automatically delivered to.",
       "Use the projectKey as the stable routing identity. Project labels such as 'Vault Collab', 'vault-collab', and 'vault_collab' match the same key.",
       "For cross-project work, keep all sessions on the same Vault Collab database and route via relatedProjects, sourceProject, targetProject, suggestedSessionUid, discussions, and pings.",
-      "Immediately call vault_collab_get_session_attention with includeCurrentHandoffs=true for your session. CLI equivalent: attention.",
-      "Treat vault_collab_get_session_attention as the active-session notice surface. Recheck it after user messages, after completing work, and before saying no work is available.",
+      "Delivery is pull-based: agents are responsible for draining their own attention; nothing will inject messages into a manual agent session.",
+      "Immediately drain your session with the CLI receive --wait command or a poll loop around vault_collab_receive. Include current handoffs when joining or returning idle.",
+      "Use vault_collab_get_session_attention when you need a token-safe preview without advancing the cursor. CLI equivalent: attention.",
+      "Operate in this loop: register with a role, do your current work, heartbeat periodically, receive --wait or call vault_collab_receive in a poll loop, handle pings/handoffs/discussion, then repeat.",
       "For a local idle helper that should notice work without manual prompting, run the CLI watch-attention command. It polls attention and prints manual recommended actions; it does not claim or execute work.",
       "For automatic delivery, a host process that owns the target terminal must run receive-attention or an equivalent receiver adapter and register the target as deliveryWakeable. Manual Codex/Claude sessions are not wakeable just because they are listed as active.",
       "If an item references a handoff, read vault_collab_get_handoff_detail before acting. If vaultMemoryUid is present, read the linked Vault memory too.",
@@ -43,7 +45,7 @@ export function getAgentOperatingGuide(options: AgentGuideOptions = {}): AgentOp
       "Use handoff-linked discussion threads for questions, proposals, review notes, and decisions that other agents need to see.",
       "Use launch-request tools to record spawn intent, approval, broker pickup, and registered launched sessions. A launch request never spawns a process by itself.",
       "Resolve only after the work is genuinely complete and verified. Release or request confirmation when ownership or permission is unclear.",
-      "When idle, call vault_collab_get_session_attention again instead of relying only on vault_collab_list_inbox."
+      "When idle, drain with receive --wait or vault_collab_receive before going quiet instead of relying only on vault_collab_list_inbox."
     ],
     attentionItems: {
       session_ping: "A soft notice for this session. Inspect the message and related handoff or discussion before deciding what to do.",
@@ -73,7 +75,7 @@ export function getAgentOperatingGuide(options: AgentGuideOptions = {}): AgentOp
     ],
     toolMap: {
       start: "vault_collab_get_agent_guide -> vault_collab_register_session -> vault_collab_get_session_attention",
-      watch: "CLI only: watch-attention polls vault_collab_get_session_attention and returns manual recommended actions; receive-attention is the receiver/ack primitive for host-owned wakeable sessions.",
+      watch: "Pull model: receive --wait drains and acknowledges your own attention; vault_collab_receive does one non-blocking drain for MCP clients. watch-attention only previews recommended actions.",
       inspect: "vault_collab_get_handoff_detail, vault_collab_get_discussion_thread, vault_collab_list_events",
       coordinate: "vault_collab_create_handoff_discussion_thread, vault_collab_add_discussion_message, vault_collab_ping_session",
       work: "vault_collab_claim_handoff, vault_collab_update_session_state, vault_collab_update_handoff",

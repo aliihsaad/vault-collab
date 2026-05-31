@@ -8,9 +8,12 @@ import type {
   EventRecord,
   HandoffRecord,
   LaunchRequestRecord,
+  ReceiveOptions,
+  ReceiveResult,
   SessionAttentionFeed,
   SessionAttentionItem,
-  SessionAttentionOptions
+  SessionAttentionOptions,
+  WaitForAttentionOptions
 } from "../types.js";
 
 const closedHandoffStatuses = new Set(["resolved", "abandoned", "stale"]);
@@ -295,5 +298,79 @@ export class AttentionService {
       "suggested_handoff",
       "available_handoff"
     ].indexOf(kind);
+  }
+
+  receiveOnce(
+    sessionUid: string,
+    sessionToken: string,
+    options: ReceiveOptions = {}
+  ): ReceiveResult {
+    const session = this.sessions.getOwnedSession(sessionUid, sessionToken);
+    const fromEventId = session.delivery.lastAckEventId ?? 0;
+    const feed = this.getSessionAttention(sessionUid, {
+      sinceEventId: fromEventId,
+      includeCurrentHandoffs: options.includeCurrentHandoffs
+    });
+    const items = this.receiveItems(feed, fromEventId);
+    const result: ReceiveResult = {
+      session: feed.session,
+      fromEventId,
+      toEventId: feed.latestEventId,
+      items,
+      drained: true
+    };
+
+    if (options.advanceCursor !== false && items.length > 0) {
+      result.session = this.sessions.acknowledgeAttention(
+        sessionUid,
+        sessionToken,
+        feed.latestEventId
+      );
+    }
+
+    return result;
+  }
+
+  async waitForAttention(
+    sessionUid: string,
+    sessionToken: string,
+    options: WaitForAttentionOptions = {}
+  ): Promise<ReceiveResult> {
+    const timeoutMs = options.timeoutMs ?? 60_000;
+    const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+
+    if (timeoutMs < 0) {
+      throw new Error("timeoutMs must be 0 or greater");
+    }
+
+    if (pollIntervalMs <= 0) {
+      throw new Error("pollIntervalMs must be greater than 0");
+    }
+
+    const startedAt = Date.now();
+    let result = this.receiveOnce(sessionUid, sessionToken, options);
+
+    while (result.items.length === 0 && Date.now() - startedAt < timeoutMs) {
+      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      await this.sleep(Math.min(pollIntervalMs, Math.max(0, remainingMs)));
+      result = this.receiveOnce(sessionUid, sessionToken, options);
+    }
+
+    return result;
+  }
+
+  private receiveItems(
+    feed: SessionAttentionFeed,
+    fromEventId: number
+  ): SessionAttentionItem[] {
+    if (feed.latestEventId <= fromEventId) {
+      return feed.items.filter((item) => item.event !== null);
+    }
+
+    return feed.items;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

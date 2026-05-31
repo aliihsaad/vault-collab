@@ -38,6 +38,7 @@ export const vaultCollabToolNames = [
   "vault_collab_request_session_permission",
   "vault_collab_list_sessions",
   "vault_collab_get_session_attention",
+  "vault_collab_receive",
   "vault_collab_list_attention_delivery_attempts",
   "vault_collab_rename_session",
   "vault_collab_close_session",
@@ -71,6 +72,7 @@ export const vaultCollabToolNames = [
   "vault_collab_list_discussion_threads",
   "vault_collab_get_discussion_thread",
   "vault_collab_list_events",
+  "vault_collab_sweep_expired_handoffs",
   "vault_collab_claim_handoff",
   "vault_collab_update_handoff",
   "vault_collab_request_user_confirmation",
@@ -217,6 +219,8 @@ const discussionMessageTypeValues = [
   "system"
 ] as const satisfies readonly DiscussionMessageType[];
 
+const deprecatedReceivePrefix = "[DEPRECATED - use vault_collab_receive] ";
+
 const clientTypeSchema = z.enum(clientTypeValues);
 const sessionStatusSchema = z.enum(sessionStatusValues);
 const sessionDeliveryModeSchema = z.enum(sessionDeliveryModeValues);
@@ -263,6 +267,7 @@ const registerSessionInputSchema = z.object({
   project: requiredStringSchema("Project name this session is working in."),
   workspacePath: optionalStringSchema("Required if workspace_path is omitted. Local workspace path."),
   workspace_path: optionalStringSchema("Snake_case alias for workspacePath."),
+  role: optionalStringSchema("Optional session role label; defaults to implementer."),
   agentUid: optionalStringSchema("Optional durable agent profile identifier."),
   agent_uid: optionalStringSchema("Snake_case alias for agentUid."),
   deliveryMode: sessionDeliveryModeSchema.describe("Optional attention delivery mode.").optional(),
@@ -337,6 +342,13 @@ const getSessionAttentionInputSchema = z.object({
   since_event_id: optionalNumberSchema("Snake_case alias for sinceEventId."),
   includeCurrentHandoffs: optionalBooleanSchema("Include current claimed/suggested/available handoffs."),
   include_current_handoffs: optionalBooleanSchema("Snake_case alias for includeCurrentHandoffs.")
+});
+
+const receiveInputSchema = ownedSessionInputSchema.extend({
+  includeCurrentHandoffs: optionalBooleanSchema("Include current claimed/suggested/available handoffs."),
+  include_current_handoffs: optionalBooleanSchema("Snake_case alias for includeCurrentHandoffs."),
+  advanceCursor: optionalBooleanSchema("Advance the session attention cursor after draining items."),
+  advance_cursor: optionalBooleanSchema("Snake_case alias for advanceCursor.")
 });
 
 const listAttentionDeliveryAttemptsInputSchema = z.object({
@@ -583,6 +595,8 @@ const listEventsInputSchema = z.object({
   event_type: optionalStringSchema("Snake_case alias for eventType.")
 });
 
+const sweepExpiredHandoffsInputSchema = z.object({});
+
 const updateHandoffInputSchema = ownedHandoffInputSchema.extend({
   status: progressHandoffStatusSchema.describe(
     "New progress status. Use claim_handoff, release_handoff, resolve_handoff, recover_handoff, or reopen_handoff for lifecycle transitions."
@@ -663,7 +677,7 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     name: "vault_collab_ping_session",
     title: "Ping Session",
     description:
-      "Record a soft attention ping for a non-terminal session without waking, interrupting, or auto-claiming.",
+      `${deprecatedReceivePrefix}Record a soft attention ping for a non-terminal session without waking, interrupting, or auto-claiming.`,
     inputSchema: pingSessionInputSchema
   },
   {
@@ -685,9 +699,17 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: getSessionAttentionInputSchema
   },
   {
+    name: "vault_collab_receive",
+    title: "Receive Attention",
+    description:
+      "Drain the owning session's attention feed once and advance its cursor. This is non-blocking; callers should poll or loop externally for long waits.",
+    inputSchema: receiveInputSchema
+  },
+  {
     name: "vault_collab_list_attention_delivery_attempts",
     title: "List Attention Delivery Attempts",
-    description: "List token-safe receiver delivery attempts for dashboard delivery history and failure reasons.",
+    description:
+      `${deprecatedReceivePrefix}List token-safe receiver delivery attempts for dashboard delivery history and failure reasons.`,
     inputSchema: listAttentionDeliveryAttemptsInputSchema
   },
   {
@@ -763,27 +785,28 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     name: "vault_collab_mark_launch_request_launching",
     title: "Mark Launch Request Launching",
     description:
-      "Move an approved launch request to launching when the actor has launchBroker capability. This does not spawn a process.",
+      `${deprecatedReceivePrefix}Move an approved launch request to launching when the actor has launchBroker capability. This does not spawn a process.`,
     inputSchema: markLaunchRequestLaunchingInputSchema
   },
   {
     name: "vault_collab_mark_launch_request_running",
     title: "Mark Launch Request Running",
     description:
-      "Attach an already registered launched session to a launching request when the actor has launchBroker capability.",
+      `${deprecatedReceivePrefix}Attach an already registered launched session to a launching request when the actor has launchBroker capability.`,
     inputSchema: markLaunchRequestRunningInputSchema
   },
   {
     name: "vault_collab_mark_launch_request_stopped",
     title: "Mark Launch Request Stopped",
     description:
-      "Mark a launching or running launch request stopped after a managed worker exits normally or by user stop.",
+      `${deprecatedReceivePrefix}Mark a launching or running launch request stopped after a managed worker exits normally or by user stop.`,
     inputSchema: markLaunchRequestStoppedInputSchema
   },
   {
     name: "vault_collab_fail_launch_request",
     title: "Fail Launch Request",
-    description: "Mark an approved, launching, or running launch request failed as a launch broker.",
+    description:
+      `${deprecatedReceivePrefix}Mark an approved, launching, or running launch request failed as a launch broker.`,
     inputSchema: failLaunchRequestInputSchema
   },
   {
@@ -892,6 +915,13 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: listEventsInputSchema
   },
   {
+    name: "vault_collab_sweep_expired_handoffs",
+    title: "Sweep Expired Handoffs",
+    description:
+      "Diagnostic: release handoffs whose claim lease expired and emit handoff.lease_expired events.",
+    inputSchema: sweepExpiredHandoffsInputSchema
+  },
+  {
     name: "vault_collab_claim_handoff",
     title: "Claim Handoff",
     description: "Atomically claim an available handoff for the owning session.",
@@ -998,6 +1028,7 @@ export function createVaultCollabMcpTools(
         clientType: requiredClientType(args, "clientType", "client_type"),
         project: requiredString(args, "project"),
         workspacePath: requiredString(args, "workspacePath", "workspace_path"),
+        role: optionalString(args, "role"),
         agentUid: optionalString(args, "agentUid", "agent_uid") ?? null,
         capabilities: optionalRecord(args, "capabilities") ?? {},
         delivery: {
@@ -1057,6 +1088,16 @@ export function createVaultCollabMcpTools(
         includeCurrentHandoffs:
           optionalBoolean(args, "includeCurrentHandoffs", "include_current_handoffs") ?? true
       }),
+    vault_collab_receive: (args) =>
+      attention.receiveOnce(
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        {
+          includeCurrentHandoffs:
+            optionalBoolean(args, "includeCurrentHandoffs", "include_current_handoffs") ?? true,
+          advanceCursor: optionalBoolean(args, "advanceCursor", "advance_cursor") ?? true
+        }
+      ),
     vault_collab_list_attention_delivery_attempts: (args) =>
       attentionReceiver.listDeliveryAttempts({
         sessionUid: optionalString(args, "sessionUid", "session_uid"),
@@ -1324,6 +1365,13 @@ export function createVaultCollabMcpTools(
         sessionUid: optionalString(args, "sessionUid", "session_uid"),
         eventType: optionalString(args, "eventType", "event_type")
       }),
+    vault_collab_sweep_expired_handoffs: () => {
+      const released = handoffs.sweepExpiredLeases();
+      return {
+        released,
+        count: released.length
+      };
+    },
     vault_collab_claim_handoff: (args) =>
       handoffs.claimHandoff(
         requiredString(args, "handoffUid", "handoff_uid"),
