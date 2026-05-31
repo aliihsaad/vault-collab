@@ -80,6 +80,8 @@ describe("vault-collab CLI", () => {
     expect(loopText).toMatch(/vault_collab_register_session|register/);
     expect(loopText).toMatch(/vault_collab_get_session_attention|attention/);
     expect(loopText).toMatch(/watch-attention/);
+    expect(loopText).toMatch(/receive --wait|vault_collab_receive/);
+    expect(loopText).toMatch(/pull|drain/i);
     expect(loopText).toMatch(/vault_collab_get_handoff_detail|handoff/);
     expect(loopText).toMatch(/coordinator/i);
     expect(loopText).toMatch(/managed/i);

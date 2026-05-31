@@ -169,6 +169,8 @@ describe("Vault Collab MCP tools", () => {
     expect(loopText).toMatch(/vault_collab_register_session/);
     expect(loopText).toMatch(/vault_collab_get_session_attention/);
     expect(loopText).toMatch(/watch-attention/);
+    expect(loopText).toMatch(/receive --wait|vault_collab_receive/);
+    expect(loopText).toMatch(/pull|drain/i);
     expect(loopText).toMatch(/vault_collab_get_handoff_detail/);
     expect(loopText).toMatch(/vault_collab_claim_handoff/);
     expect(loopText).toMatch(/coordinator/i);
