@@ -35,6 +35,21 @@ Vault Collab is an early standalone core. The current implementation covers:
 - Deterministic project-key matching so clients using labels such as
   `Vault Collab`, `vault-collab`, or `vault_collab` still see the same
   sessions, handoffs, profiles, and discussions.
+- Pull-based attention delivery: each active agent drains its own inbox via
+  `receive` / `receive --wait` (CLI) and `vault_collab_receive` (MCP), running a
+  register -> work -> receive -> handle loop. This is the canonical delivery model.
+- Lease and heartbeat hygiene: claimed handoffs carry a lease that refreshes on
+  heartbeat/update and auto-releases (with an audit event) when the owner stops
+  heartbeating, via `sweep-leases` / `vault_collab_sweep_expired_handoffs`; stale
+  sessions drop off the live roster.
+- Register-time launch self-link: an agent that registers with its launch
+  request UID auto-attaches to that request (sets `launchedSessionUid`, marks it
+  running) so approved copy-command launches show as active, not waiting.
+
+> **Delivery model note:** Pull (`receive`) is canonical. The earlier push/broker
+> delivery path (managed-process wake, ping-as-wake, and the attention delivery
+> adapters) is deprecated in place and kept only for backward compatibility; new
+> agents should rely on the pull loop.
 
 The current scope intentionally does not include:
 
@@ -404,6 +419,7 @@ Available MCP tools include:
 - `vault_collab_request_session_permission`
 - `vault_collab_list_sessions`
 - `vault_collab_get_session_attention`
+- `vault_collab_receive`
 - `vault_collab_disconnect_session`
 - `vault_collab_create_launch_request`
 - `vault_collab_list_launch_requests`
@@ -433,6 +449,7 @@ Available MCP tools include:
 - `vault_collab_list_discussion_threads`
 - `vault_collab_get_discussion_thread`
 - `vault_collab_list_events`
+- `vault_collab_sweep_expired_handoffs`
 - `vault_collab_claim_handoff`
 - `vault_collab_update_handoff`
 - `vault_collab_request_user_confirmation`
