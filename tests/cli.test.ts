@@ -1217,6 +1217,7 @@ describe("vault-collab CLI", () => {
     const received = parseJson<{
       timedOut: boolean;
       attempt: {
+        attemptUid: string;
         status: string;
         toEventId: number;
         deliveredAt: string | null;

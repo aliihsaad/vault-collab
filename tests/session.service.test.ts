@@ -125,7 +125,7 @@ describe("SessionService", () => {
       }
     });
 
-    expect(service.requireSession(registered.sessionUid).delivery).toEqual({
+    expect(service.getSession(registered.sessionUid)?.delivery).toEqual({
       mode: "managed_process",
       wakeable: true,
       lastAckEventId: null,
