@@ -388,6 +388,8 @@ export class SessionService {
   }
 
   listSessions(filter: SessionFilters = {}): SessionSnapshot[] {
+    this.disconnectStaleSessions();
+
     const clauses: string[] = [];
     const params: string[] = [];
 
@@ -423,6 +425,8 @@ export class SessionService {
   }
 
   getSession(sessionUid: string): SessionSnapshot | null {
+    this.disconnectStaleSessions();
+
     const row = this.findSessionRow(sessionUid);
     return row ? this.mapPublicSession(row) : null;
   }
@@ -523,6 +527,59 @@ export class SessionService {
 
   private leaseExpiresAt(): string {
     return new Date(this.clock().getTime() + getLeaseTtlMs()).toISOString();
+  }
+
+  private disconnectStaleSessions(): void {
+    const now = this.now();
+    const staleBefore = new Date(this.clock().getTime() - getLeaseTtlMs()).toISOString();
+    const rows = this.db
+      .prepare(
+        `
+        SELECT session_uid
+        FROM sessions
+        WHERE last_heartbeat_at < ?
+          AND status NOT IN (?, ?)
+      `
+      )
+      .all(staleBefore, "complete", "disconnected") as Array<{ session_uid: string }>;
+
+    if (rows.length === 0) {
+      return;
+    }
+
+    const disconnect = this.db.transaction(() => {
+      const updateSession = this.db.prepare(
+        `
+        UPDATE sessions
+        SET status = ?,
+            status_detail = ?,
+            updated_at = ?,
+            disconnected_at = ?
+        WHERE session_uid = ?
+      `
+      );
+
+      for (const row of rows) {
+        updateSession.run(
+          "disconnected",
+          "Disconnected after stale heartbeat.",
+          now,
+          now,
+          row.session_uid
+        );
+        this.expireClaimedHandoffLeases(row.session_uid, now);
+        this.events.recordEvent({
+          eventType: "session.disconnected",
+          sessionUid: row.session_uid,
+          payload: {
+            reason: "stale_heartbeat",
+            staleBefore
+          }
+        });
+      }
+    });
+
+    disconnect();
   }
 
   private requireSession(sessionUid: string): RegisteredSession {

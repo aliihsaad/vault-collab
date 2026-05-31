@@ -327,6 +327,35 @@ describe("AttentionService", () => {
     expect(JSON.stringify(feed)).not.toContain(coordinator.sessionToken);
   });
 
+  it("lazily sweeps expired handoff leases before building attention", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Expired attention claim",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, coordinator.sessionUid, coordinator.sessionToken);
+    db.prepare("UPDATE handoffs SET lease_expires_at = ? WHERE handoff_uid = ?").run(
+      "1970-01-01T00:00:00.000Z",
+      handoff.handoffUid
+    );
+
+    const feed = attention.getSessionAttention(worker.sessionUid);
+
+    expect(handoffs.getHandoff(handoff.handoffUid)).toMatchObject({
+      status: "available",
+      claimedBySessionUid: null
+    });
+    expect(feed.items).toContainEqual(
+      expect.objectContaining({
+        kind: "available_handoff",
+        handoff: expect.objectContaining({
+          handoffUid: handoff.handoffUid,
+          status: "available"
+        })
+      })
+    );
+  });
+
   it("receives new attention once and advances the session cursor", () => {
     const ping = sessions.pingSession(worker.sessionUid, {
       actorSessionUid: coordinator.sessionUid,

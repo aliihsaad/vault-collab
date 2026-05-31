@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.js";
+import { createCollabDatabase } from "../src/database/connection.js";
 
 interface CliResult {
   exitCode: number;
@@ -1365,6 +1366,75 @@ describe("vault-collab CLI", () => {
       items: [],
       drained: true
     });
+  });
+
+  it("sweeps expired handoff leases through the CLI", async () => {
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Lease Owner",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const handoff = parseJson<{ handoffUid: string }>(
+      await runCli([
+        "publish",
+        "--db",
+        dbPath,
+        "--short-prompt",
+        "Sweep from CLI",
+        "--source-project",
+        "Vault Collab",
+        "--target-project",
+        "Vault Collab"
+      ])
+    );
+    await runCli([
+      "claim",
+      "--db",
+      dbPath,
+      "--handoff-uid",
+      handoff.handoffUid,
+      "--session-uid",
+      worker.sessionUid,
+      "--session-token",
+      worker.sessionToken
+    ]);
+    const db = createCollabDatabase(dbPath);
+    db.prepare("UPDATE handoffs SET lease_expires_at = ? WHERE handoff_uid = ?").run(
+      "1970-01-01T00:00:00.000Z",
+      handoff.handoffUid
+    );
+    db.close();
+
+    const swept = parseJson<{ released: string[]; count: number }>(
+      await runCli(["sweep-leases", "--db", dbPath])
+    );
+    const leaseEvents = parseJson<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await runCli(["events", "--db", dbPath, "--event-type", "handoff.lease_expired"])
+    );
+
+    expect(swept).toEqual({
+      released: [handoff.handoffUid],
+      count: 1
+    });
+    expect(leaseEvents).toEqual([
+      expect.objectContaining({
+        eventType: "handoff.lease_expired",
+        payload: expect.objectContaining({
+          priorClaimedBySessionUid: worker.sessionUid,
+          reason: "lease_expired"
+        })
+      })
+    ]);
   });
 
   it("runs the launch-request broker lifecycle through flat JSON commands", async () => {

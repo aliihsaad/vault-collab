@@ -60,6 +60,13 @@ interface SessionOwnerRow {
 }
 
 const closedInboxStatuses: HandoffStatus[] = ["resolved", "abandoned", "stale"];
+const leasedHandoffStatuses: HandoffStatus[] = [
+  "claimed",
+  "in_progress",
+  "blocked",
+  "awaiting_user",
+  "verification_needed"
+];
 
 function normalizeRelatedProjects(input: PublishHandoffInput): string[] {
   const relatedProjects =
@@ -185,6 +192,8 @@ export class HandoffService {
   }
 
   listInbox(filter: HandoffFilters = {}): HandoffRecord[] {
+    this.sweepExpiredLeases();
+
     const clauses: string[] = [];
     const params: string[] = [];
 
@@ -360,6 +369,84 @@ export class HandoffService {
     });
 
     return this.requireHandoff(handoffUid);
+  }
+
+  sweepExpiredLeases(): string[] {
+    const now = this.now();
+    const sweep = this.db.transaction(() => {
+      const rows = this.db
+        .prepare(
+          `
+          SELECT handoff_uid, claimed_by_session_uid
+          FROM handoffs
+          WHERE lease_expires_at IS NOT NULL
+            AND lease_expires_at <= ?
+            AND status IN (${leasedHandoffStatuses.map(() => "?").join(", ")})
+          ORDER BY lease_expires_at ASC, handoff_uid ASC
+        `
+        )
+        .all(now, ...leasedHandoffStatuses) as Array<{
+        handoff_uid: string;
+        claimed_by_session_uid: string | null;
+      }>;
+
+      if (rows.length === 0) {
+        return [];
+      }
+
+      const release = this.db.prepare(
+        `
+        UPDATE handoffs
+        SET status = ?,
+            claimed_by_session_uid = NULL,
+            claim_token = NULL,
+            lease_expires_at = NULL,
+            progress_note = NULL,
+            updated_at = ?
+        WHERE handoff_uid = ?
+      `
+      );
+      const clearSession = this.db.prepare(
+        `
+        UPDATE sessions
+        SET current_handoff_uid = NULL,
+            status = ?,
+            status_detail = NULL,
+            updated_at = ?
+        WHERE session_uid = ?
+          AND current_handoff_uid = ?
+          AND status NOT IN (?, ?)
+      `
+      );
+
+      for (const row of rows) {
+        release.run("available", now, row.handoff_uid);
+        if (row.claimed_by_session_uid) {
+          clearSession.run(
+            "idle",
+            now,
+            row.claimed_by_session_uid,
+            row.handoff_uid,
+            "complete",
+            "disconnected"
+          );
+        }
+        this.events.recordEvent({
+          eventType: "handoff.lease_expired",
+          handoffUid: row.handoff_uid,
+          sessionUid: null,
+          payload: {
+            priorClaimedBySessionUid: row.claimed_by_session_uid,
+            reason: "lease_expired",
+            sweptAt: now
+          }
+        });
+      }
+
+      return rows.map((row) => row.handoff_uid);
+    });
+
+    return sweep();
   }
 
   updateHandoffMetadata(

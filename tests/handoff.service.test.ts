@@ -832,6 +832,71 @@ describe("HandoffService", () => {
     ).toThrow(/not claimed by session/i);
   });
 
+  it("sweeps expired leases atomically and emits a lease_expired event", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Sweep me",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    db.prepare("UPDATE handoffs SET lease_expires_at = ? WHERE handoff_uid = ?").run(
+      "1970-01-01T00:00:00.000Z",
+      handoff.handoffUid
+    );
+    now = new Date("2026-05-28T11:02:50.000Z");
+
+    const released = handoffs.sweepExpiredLeases();
+    const secondSweep = handoffs.sweepExpiredLeases();
+    const reloaded = handoffs.getHandoff(handoff.handoffUid);
+    const leaseEvent = events.listEvents({
+      handoffUid: handoff.handoffUid,
+      eventType: "handoff.lease_expired"
+    })[0];
+
+    expect(released).toEqual([handoff.handoffUid]);
+    expect(secondSweep).toEqual([]);
+    expect(reloaded).toMatchObject({
+      status: "available",
+      claimedBySessionUid: null,
+      leaseExpiresAt: null
+    });
+    expect(leaseEvent).toMatchObject({
+      eventType: "handoff.lease_expired",
+      handoffUid: handoff.handoffUid,
+      sessionUid: null,
+      payload: {
+        priorClaimedBySessionUid: claude.sessionUid,
+        reason: "lease_expired",
+        sweptAt: "2026-05-28T11:02:50.000Z"
+      }
+    });
+  });
+
+  it("lazily sweeps expired leases before listing the inbox", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Lazy sweep me",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    db.prepare("UPDATE handoffs SET lease_expires_at = ? WHERE handoff_uid = ?").run(
+      "1970-01-01T00:00:00.000Z",
+      handoff.handoffUid
+    );
+
+    const inbox = handoffs.listInbox({ targetProject: "Vault Collab" });
+
+    expect(inbox).toEqual([
+      expect.objectContaining({
+        handoffUid: handoff.handoffUid,
+        status: "available",
+        claimedBySessionUid: null
+      })
+    ]);
+    expect(events.listEvents({ handoffUid: handoff.handoffUid, eventType: "handoff.lease_expired" }))
+      .toHaveLength(1);
+  });
+
   it("resolves a claimed handoff without deleting its history", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Resolve me",

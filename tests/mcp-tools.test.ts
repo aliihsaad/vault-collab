@@ -8,6 +8,7 @@ import {
   vaultCollabToolNames,
   type VaultCollabToolResult
 } from "../src/mcp/tools.js";
+import { createCollabDatabase } from "../src/database/connection.js";
 import type { VaultMemoryClient, VaultMemorySaveInput } from "../src/services/vault-link.service.js";
 
 function structured<T>(result: VaultCollabToolResult): T {
@@ -94,6 +95,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_list_discussion_threads",
       "vault_collab_get_discussion_thread",
       "vault_collab_list_events",
+      "vault_collab_sweep_expired_handoffs",
       "vault_collab_claim_handoff",
       "vault_collab_update_handoff",
       "vault_collab_request_user_confirmation",
@@ -508,6 +510,10 @@ describe("Vault Collab MCP tools", () => {
 
   it("does not expose empty passthrough-only schemas for any MCP tool", () => {
     for (const definition of vaultCollabToolDefinitions) {
+      if (definition.name === "vault_collab_sweep_expired_handoffs") {
+        expect(Object.keys(definition.inputSchema.shape), definition.name).toHaveLength(0);
+        continue;
+      }
       expect(Object.keys(definition.inputSchema.shape), definition.name).not.toHaveLength(0);
     }
   });
@@ -792,6 +798,47 @@ describe("Vault Collab MCP tools", () => {
 
     expect(attempts).toEqual([]);
     expect(JSON.stringify(attempts)).not.toContain(session.sessionToken);
+  });
+
+  it("sweeps expired handoff leases through MCP", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const worker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Lease Owner",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const handoff = structured<{ handoffUid: string }>(
+      await tools.callTool("vault_collab_publish_handoff", {
+        shortPrompt: "Sweep from MCP",
+        sourceProject: "Vault Collab",
+        targetProject: "Vault Collab"
+      })
+    );
+    await tools.callTool("vault_collab_claim_handoff", {
+      handoffUid: handoff.handoffUid,
+      sessionUid: worker.sessionUid,
+      sessionToken: worker.sessionToken
+    });
+    const db = createCollabDatabase(dbPath);
+    db.prepare("UPDATE handoffs SET lease_expires_at = ? WHERE handoff_uid = ?").run(
+      "1970-01-01T00:00:00.000Z",
+      handoff.handoffUid
+    );
+    db.close();
+
+    const swept = structured<{ released: string[]; count: number }>(
+      await tools.callTool("vault_collab_sweep_expired_handoffs", {})
+    );
+
+    expect(swept).toEqual({
+      released: [handoff.handoffUid],
+      count: 1
+    });
   });
 
   it("records soft pings and permission requests through MCP without leaking tokens", async () => {

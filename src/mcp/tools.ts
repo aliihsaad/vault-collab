@@ -72,6 +72,7 @@ export const vaultCollabToolNames = [
   "vault_collab_list_discussion_threads",
   "vault_collab_get_discussion_thread",
   "vault_collab_list_events",
+  "vault_collab_sweep_expired_handoffs",
   "vault_collab_claim_handoff",
   "vault_collab_update_handoff",
   "vault_collab_request_user_confirmation",
@@ -591,6 +592,8 @@ const listEventsInputSchema = z.object({
   event_type: optionalStringSchema("Snake_case alias for eventType.")
 });
 
+const sweepExpiredHandoffsInputSchema = z.object({});
+
 const updateHandoffInputSchema = ownedHandoffInputSchema.extend({
   status: progressHandoffStatusSchema.describe(
     "New progress status. Use claim_handoff, release_handoff, resolve_handoff, recover_handoff, or reopen_handoff for lifecycle transitions."
@@ -905,6 +908,13 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     title: "List Events",
     description: "List inspectable session and handoff event history without mutating state.",
     inputSchema: listEventsInputSchema
+  },
+  {
+    name: "vault_collab_sweep_expired_handoffs",
+    title: "Sweep Expired Handoffs",
+    description:
+      "Diagnostic: release handoffs whose claim lease expired and emit handoff.lease_expired events.",
+    inputSchema: sweepExpiredHandoffsInputSchema
   },
   {
     name: "vault_collab_claim_handoff",
@@ -1349,6 +1359,13 @@ export function createVaultCollabMcpTools(
         sessionUid: optionalString(args, "sessionUid", "session_uid"),
         eventType: optionalString(args, "eventType", "event_type")
       }),
+    vault_collab_sweep_expired_handoffs: () => {
+      const released = handoffs.sweepExpiredLeases();
+      return {
+        released,
+        count: released.length
+      };
+    },
     vault_collab_claim_handoff: (args) =>
       handoffs.claimHandoff(
         requiredString(args, "handoffUid", "handoff_uid"),

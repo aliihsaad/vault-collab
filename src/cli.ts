@@ -93,6 +93,7 @@ const commands = new Set([
   "watch-attention",
   "receive",
   "receive-attention",
+  "sweep-leases",
   "delivery-attempts",
   "state",
   "ping-session",
@@ -236,6 +237,14 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
 
     case "receive-attention":
       return receiveAttention(parsed, services);
+
+    case "sweep-leases": {
+      const released = services.handoffs.sweepExpiredLeases();
+      return {
+        released,
+        count: released.length
+      };
+    }
 
     case "delivery-attempts":
       return createAttentionReceiver(services).listDeliveryAttempts({

@@ -657,6 +657,39 @@ describe("SessionService", () => {
     expect(service.listSessions({ project: "Missing" })).toEqual([]);
   });
 
+  it("marks stale heartbeat sessions disconnected during roster reads", () => {
+    const registered = service.registerSession({
+      displayName: "Stale worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Stale worker claim",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, registered.sessionUid, registered.sessionToken);
+    db.prepare("UPDATE sessions SET last_heartbeat_at = ? WHERE session_uid = ?").run(
+      "2026-05-28T09:00:00.000Z",
+      registered.sessionUid
+    );
+
+    const idleSessions = service.listSessions({ status: "idle" });
+    const disconnected = service.getSession(registered.sessionUid);
+
+    expect(idleSessions).toEqual([]);
+    expect(disconnected).toMatchObject({
+      sessionUid: registered.sessionUid,
+      status: "disconnected",
+      disconnectedAt: "2026-05-28T10:00:00.000Z"
+    });
+    expect(handoffs.getHandoff(handoff.handoffUid)?.leaseExpiresAt).toBe(
+      "2026-05-28T10:00:00.000Z"
+    );
+  });
+
   it("routes sessions by persisted project key instead of mutable display label", () => {
     const registered = service.registerSession({
       displayName: "Codex",
