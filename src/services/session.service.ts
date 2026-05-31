@@ -415,6 +415,10 @@ export class SessionService {
     return row ? this.mapPublicSession(row) : null;
   }
 
+  getOwnedSession(sessionUid: string, sessionToken: string): SessionSnapshot {
+    return this.mapPublicSession(this.assertOwnedSession(sessionUid, sessionToken));
+  }
+
   private assertOwnedSession(sessionUid: string, sessionToken: string): SessionRow {
     const row = this.findSessionRow(sessionUid);
     if (!row) {

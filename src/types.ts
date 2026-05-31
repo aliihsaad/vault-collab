@@ -187,6 +187,23 @@ export interface SessionAttentionFeed {
   items: SessionAttentionItem[];
 }
 
+export interface ReceiveOptions extends SessionAttentionOptions {
+  advanceCursor?: boolean;
+}
+
+export interface WaitForAttentionOptions extends ReceiveOptions {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
+export interface ReceiveResult {
+  session: SessionSnapshot;
+  fromEventId: number;
+  toEventId: number;
+  items: SessionAttentionItem[];
+  drained: boolean;
+}
+
 export interface AttentionDeliveryBatch {
   session: SessionSnapshot;
   fromEventId: number;

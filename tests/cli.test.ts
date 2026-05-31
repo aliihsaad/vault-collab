@@ -1245,6 +1245,128 @@ describe("vault-collab CLI", () => {
     expect(JSON.stringify(attempts)).not.toContain(worker.sessionToken);
   });
 
+  it("receives pull-based attention through the CLI and advances the cursor", async () => {
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Pull Receiver",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+
+    const receivePromise = runCli([
+      "receive",
+      worker.sessionUid,
+      "--db",
+      dbPath,
+      "--token",
+      worker.sessionToken,
+      "--wait",
+      "--timeout",
+      "1",
+      "--interval-ms",
+      "20",
+      "--json"
+    ]);
+    await delay(40);
+    const ping = parseJson<{ event: { eventId: number } }>(
+      await runCli([
+        "ping-session",
+        "--db",
+        dbPath,
+        "--target-session-uid",
+        worker.sessionUid,
+        "--message",
+        "Pull this from the CLI."
+      ])
+    );
+
+    const received = parseJson<{
+      fromEventId: number;
+      toEventId: number;
+      drained: boolean;
+      items: Array<{ kind: string; event: { eventId: number } | null }>;
+    }>(await receivePromise);
+    const secondReceive = parseJson<{ items: unknown[] }>(
+      await runCli([
+        "receive",
+        worker.sessionUid,
+        "--db",
+        dbPath,
+        "--token",
+        worker.sessionToken,
+        "--json"
+      ])
+    );
+
+    expect(received).toMatchObject({
+      fromEventId: 0,
+      toEventId: ping.event.eventId,
+      drained: true
+    });
+    expect(received.items).toEqual([
+      expect.objectContaining({
+        kind: "session_ping",
+        event: expect.objectContaining({
+          eventId: ping.event.eventId
+        })
+      })
+    ]);
+    expect(secondReceive.items).toEqual([]);
+    expect(JSON.stringify(received)).not.toContain(worker.sessionToken);
+  });
+
+  it("receive --wait --timeout returns promptly when no attention arrives", async () => {
+    const worker = parseJson<{ sessionUid: string; sessionToken: string }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Idle Pull Receiver",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd
+      ])
+    );
+    const startedAt = Date.now();
+
+    const received = parseJson<{ items: unknown[]; drained: boolean }>(
+      await runCli([
+        "receive",
+        worker.sessionUid,
+        "--db",
+        dbPath,
+        "--token",
+        worker.sessionToken,
+        "--wait",
+        "--timeout",
+        "1",
+        "--interval-ms",
+        "20",
+        "--json"
+      ])
+    );
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(900);
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(received).toMatchObject({
+      items: [],
+      drained: true
+    });
+  });
+
   it("runs the launch-request broker lifecycle through flat JSON commands", async () => {
     const requester = parseJson<{ sessionUid: string; sessionToken: string }>(
       await runCli([

@@ -91,6 +91,7 @@ const commands = new Set([
   "attention",
   "attention-ack",
   "watch-attention",
+  "receive",
   "receive-attention",
   "delivery-attempts",
   "state",
@@ -229,6 +230,9 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
 
     case "watch-attention":
       return watchAttention(parsed, services);
+
+    case "receive":
+      return receive(parsed, services);
 
     case "receive-attention":
       return receiveAttention(parsed, services);
@@ -643,6 +647,30 @@ async function watchAttention(
   };
 }
 
+async function receive(
+  parsed: ParsedCommand,
+  services: Services
+): Promise<unknown> {
+  const timeoutSeconds = optionalNumberOption(parsed, "timeout");
+  const timeoutMs = optionalNumberOption(parsed, "timeout-ms") ?? (
+    timeoutSeconds === undefined ? undefined : timeoutSeconds * 1000
+  );
+  const options = {
+    includeCurrentHandoffs: !parsed.options.has("no-current-handoffs"),
+    advanceCursor: !parsed.options.has("no-advance"),
+    timeoutMs,
+    pollIntervalMs: optionalNumberOption(parsed, "interval-ms")
+  };
+  const sessionUid = requiredOption(parsed, "session-uid");
+  const sessionToken = requiredOptionAlias(parsed, "token", "session-token");
+
+  if (parsed.options.has("wait")) {
+    return services.attention.waitForAttention(sessionUid, sessionToken, options);
+  }
+
+  return services.attention.receiveOnce(sessionUid, sessionToken, options);
+}
+
 async function receiveAttention(
   parsed: ParsedCommand,
   services: Services
@@ -856,6 +884,11 @@ function parseArgs(argv: string[]): ParsedCommand {
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index];
     if (!token?.startsWith("--")) {
+      if (command === "receive" && !options.has("session-uid")) {
+        options.set("session-uid", [token]);
+        continue;
+      }
+
       throw new Error(`Unexpected argument: ${token}`);
     }
 
@@ -887,6 +920,14 @@ function requiredOption(parsed: ParsedCommand, name: string): string {
   }
 
   return value;
+}
+
+function requiredOptionAlias(
+  parsed: ParsedCommand,
+  primaryName: string,
+  fallbackName: string
+): string {
+  return optionalOption(parsed, primaryName) ?? requiredOption(parsed, fallbackName);
 }
 
 function optionalOption(parsed: ParsedCommand, name: string): string | undefined {

@@ -60,6 +60,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_request_session_permission",
       "vault_collab_list_sessions",
       "vault_collab_get_session_attention",
+      "vault_collab_receive",
       "vault_collab_list_attention_delivery_attempts",
       "vault_collab_rename_session",
       "vault_collab_close_session",
@@ -648,6 +649,62 @@ describe("Vault Collab MCP tools", () => {
     });
     expect(JSON.stringify(acknowledged)).not.toContain(session.sessionToken);
     expect(JSON.stringify(events)).not.toContain(session.sessionToken);
+  });
+
+  it("receives pull-based attention through MCP and advances the cursor", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const worker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Pull MCP Receiver",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const ping = structured<{ event: { eventId: number } }>(
+      await tools.callTool("vault_collab_ping_session", {
+        targetSessionUid: worker.sessionUid,
+        message: "Pull this from MCP."
+      })
+    );
+
+    const received = structured<{
+      fromEventId: number;
+      toEventId: number;
+      drained: boolean;
+      items: Array<{ kind: string; event: { eventId: number } | null }>;
+    }>(
+      await tools.callTool("vault_collab_receive", {
+        sessionUid: worker.sessionUid,
+        sessionToken: worker.sessionToken,
+        includeCurrentHandoffs: false
+      })
+    );
+    const secondReceive = structured<{ items: unknown[] }>(
+      await tools.callTool("vault_collab_receive", {
+        sessionUid: worker.sessionUid,
+        sessionToken: worker.sessionToken,
+        includeCurrentHandoffs: false
+      })
+    );
+
+    expect(received).toMatchObject({
+      fromEventId: 0,
+      toEventId: ping.event.eventId,
+      drained: true
+    });
+    expect(received.items).toEqual([
+      expect.objectContaining({
+        kind: "session_ping",
+        event: expect.objectContaining({
+          eventId: ping.event.eventId
+        })
+      })
+    ]);
+    expect(secondReceive.items).toEqual([]);
+    expect(JSON.stringify(received)).not.toContain(worker.sessionToken);
   });
 
   it("renames and closes roster sessions through MCP without leaking tokens", async () => {

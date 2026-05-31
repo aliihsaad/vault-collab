@@ -38,6 +38,7 @@ export const vaultCollabToolNames = [
   "vault_collab_request_session_permission",
   "vault_collab_list_sessions",
   "vault_collab_get_session_attention",
+  "vault_collab_receive",
   "vault_collab_list_attention_delivery_attempts",
   "vault_collab_rename_session",
   "vault_collab_close_session",
@@ -337,6 +338,13 @@ const getSessionAttentionInputSchema = z.object({
   since_event_id: optionalNumberSchema("Snake_case alias for sinceEventId."),
   includeCurrentHandoffs: optionalBooleanSchema("Include current claimed/suggested/available handoffs."),
   include_current_handoffs: optionalBooleanSchema("Snake_case alias for includeCurrentHandoffs.")
+});
+
+const receiveInputSchema = ownedSessionInputSchema.extend({
+  includeCurrentHandoffs: optionalBooleanSchema("Include current claimed/suggested/available handoffs."),
+  include_current_handoffs: optionalBooleanSchema("Snake_case alias for includeCurrentHandoffs."),
+  advanceCursor: optionalBooleanSchema("Advance the session attention cursor after draining items."),
+  advance_cursor: optionalBooleanSchema("Snake_case alias for advanceCursor.")
 });
 
 const listAttentionDeliveryAttemptsInputSchema = z.object({
@@ -683,6 +691,13 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     title: "Get Session Attention",
     description: "Read a token-safe attention feed for an active session without claiming or executing work.",
     inputSchema: getSessionAttentionInputSchema
+  },
+  {
+    name: "vault_collab_receive",
+    title: "Receive Attention",
+    description:
+      "Drain the owning session's attention feed once and advance its cursor. This is non-blocking; callers should poll or loop externally for long waits.",
+    inputSchema: receiveInputSchema
   },
   {
     name: "vault_collab_list_attention_delivery_attempts",
@@ -1057,6 +1072,16 @@ export function createVaultCollabMcpTools(
         includeCurrentHandoffs:
           optionalBoolean(args, "includeCurrentHandoffs", "include_current_handoffs") ?? true
       }),
+    vault_collab_receive: (args) =>
+      attention.receiveOnce(
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        {
+          includeCurrentHandoffs:
+            optionalBoolean(args, "includeCurrentHandoffs", "include_current_handoffs") ?? true,
+          advanceCursor: optionalBoolean(args, "advanceCursor", "advance_cursor") ?? true
+        }
+      ),
     vault_collab_list_attention_delivery_attempts: (args) =>
       attentionReceiver.listDeliveryAttempts({
         sessionUid: optionalString(args, "sessionUid", "session_uid"),
