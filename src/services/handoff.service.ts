@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
+import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import { progressHandoffStatuses } from "../types.js";
 import type { EventService } from "./event.service.js";
@@ -454,13 +455,22 @@ export class HandoffService {
           SET status = ?,
               claimed_by_session_uid = ?,
               claim_token = ?,
+              lease_expires_at = ?,
               updated_at = ?
           WHERE handoff_uid = ?
             AND status = ?
             AND claimed_by_session_uid IS NULL
         `
         )
-        .run("claimed", sessionUid, claimToken, now, handoffUid, "available");
+        .run(
+          "claimed",
+          sessionUid,
+          claimToken,
+          this.leaseExpiresAt(),
+          now,
+          handoffUid,
+          "available"
+        );
 
       if (result.changes !== 1) {
         const current = this.findHandoffRow(handoffUid);
@@ -527,11 +537,11 @@ export class HandoffService {
       .prepare(
         `
         UPDATE handoffs
-        SET status = ?, progress_note = ?, updated_at = ?
+        SET status = ?, progress_note = ?, lease_expires_at = ?, updated_at = ?
         WHERE handoff_uid = ?
       `
       )
-      .run(status, progressNote, now, handoffUid);
+      .run(status, progressNote, this.leaseExpiresAt(), now, handoffUid);
     this.updateSessionWorkState(
       sessionUid,
       this.sessionStatusForHandoffStatus(status),
@@ -1100,6 +1110,10 @@ export class HandoffService {
 
   private now(): string {
     return this.clock().toISOString();
+  }
+
+  private leaseExpiresAt(): string {
+    return new Date(this.clock().getTime() + getLeaseTtlMs()).toISOString();
   }
 
   private nextQueuePosition(targetProject: string, queueKey: string): number {

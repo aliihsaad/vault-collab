@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCollabDatabase, type CollabDatabase } from "../src/database/connection.js";
+import { getLeaseTtlMs } from "../src/lease.js";
 import { EventService } from "../src/services/event.service.js";
 import { HandoffService } from "../src/services/handoff.service.js";
 import { SessionService } from "../src/services/session.service.js";
@@ -342,6 +343,55 @@ describe("HandoffService", () => {
     expect(() =>
       handoffs.claimHandoff(handoff.handoffUid, codex.sessionUid, codex.sessionToken)
     ).toThrow(/already claimed/i);
+  });
+
+  it("sets leaseExpiresAt to claim time plus the lease TTL on claim", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Claim lease",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    now = new Date("2026-05-28T11:01:00.000Z");
+
+    const claimed = handoffs.claimHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken
+    );
+
+    expect(claimed.leaseExpiresAt).toBe(
+      new Date(now.getTime() + getLeaseTtlMs()).toISOString()
+    );
+  });
+
+  it("refreshes leaseExpiresAt on handoff update", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Refresh lease",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    now = new Date("2026-05-28T11:01:00.000Z");
+    const claimed = handoffs.claimHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken
+    );
+
+    now = new Date("2026-05-28T11:02:00.000Z");
+    const updated = handoffs.updateHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      "in_progress",
+      "Lease should refresh."
+    );
+
+    expect(new Date(updated.leaseExpiresAt!).getTime()).toBeGreaterThan(
+      new Date(claimed.leaseExpiresAt!).getTime()
+    );
+    expect(updated.leaseExpiresAt).toBe(
+      new Date(now.getTime() + getLeaseTtlMs()).toISOString()
+    );
   });
 
   it("describes owner-token-aware handoff actions for dashboards", () => {

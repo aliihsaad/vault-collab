@@ -416,6 +416,10 @@ export interface HandoffRecord {
   priority: HandoffPriority;
   urgent: boolean;
   claimedBySessionUid: string | null;
+  /**
+   * ISO timestamp for the claim lease. Defaults to now + VAULT_COLLAB_LEASE_TTL_MS,
+   * or five minutes when the environment variable is unset or invalid.
+   */
   leaseExpiresAt: string | null;
   progressNote: string | null;
   resolutionSummary: string | null;

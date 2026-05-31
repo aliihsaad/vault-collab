@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 
 export function applySchema(db: Database.Database): void {
@@ -205,9 +206,11 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "handoffs", "labels_json", "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, "handoffs", "queue_position", "INTEGER");
   addColumnIfMissing(db, "handoffs", "depends_on_handoff_uid", "TEXT");
+  addColumnIfMissing(db, "handoffs", "lease_expires_at", "TEXT");
   addColumnIfMissing(db, "discussion_threads", "project_key", "TEXT");
 
   backfillProjectRoutingKeys(db);
+  backfillClaimedHandoffLeases(db);
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sessions_project_key ON sessions(project_key);
@@ -219,6 +222,9 @@ export function applySchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_handoffs_queue ON handoffs(target_project, queue_key, queue_position);
     CREATE INDEX IF NOT EXISTS idx_handoffs_queue_project_key
       ON handoffs(target_project_key, queue_key, queue_position);
+    CREATE INDEX IF NOT EXISTS idx_handoffs_lease_expires
+      ON handoffs(lease_expires_at)
+      WHERE lease_expires_at IS NOT NULL;
   `);
 }
 
@@ -245,6 +251,18 @@ function backfillProjectRoutingKeys(db: Database.Database): void {
   backfillProjectKeyColumn(db, "handoffs", "source_project", "source_project_key");
   backfillProjectKeyColumn(db, "handoffs", "target_project", "target_project_key");
   backfillProjectKeyColumn(db, "discussion_threads", "project", "project_key");
+}
+
+function backfillClaimedHandoffLeases(db: Database.Database): void {
+  const leaseExpiresAt = new Date(Date.now() + getLeaseTtlMs()).toISOString();
+  db.prepare(
+    `
+    UPDATE handoffs
+    SET lease_expires_at = ?
+    WHERE lease_expires_at IS NULL
+      AND status IN ('claimed', 'in_progress', 'blocked', 'awaiting_user', 'verification_needed')
+  `
+  ).run(leaseExpiresAt);
 }
 
 function backfillProjectKeyColumn(
