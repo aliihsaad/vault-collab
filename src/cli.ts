@@ -194,6 +194,7 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
           clientType: optionClientType(parsed, "client-type"),
           project: requiredOption(parsed, "project"),
           workspacePath: requiredOption(parsed, "workspace-path"),
+          role: optionalOption(parsed, "role"),
           agentUid: optionalOption(parsed, "agent-uid") ?? null,
           capabilities: parseCapabilities(parsed.options.get("capability") ?? []),
           delivery: {

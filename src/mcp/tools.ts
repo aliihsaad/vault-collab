@@ -265,6 +265,7 @@ const registerSessionInputSchema = z.object({
   project: requiredStringSchema("Project name this session is working in."),
   workspacePath: optionalStringSchema("Required if workspace_path is omitted. Local workspace path."),
   workspace_path: optionalStringSchema("Snake_case alias for workspacePath."),
+  role: optionalStringSchema("Optional session role label; defaults to implementer."),
   agentUid: optionalStringSchema("Optional durable agent profile identifier."),
   agent_uid: optionalStringSchema("Snake_case alias for agentUid."),
   deliveryMode: sessionDeliveryModeSchema.describe("Optional attention delivery mode.").optional(),
@@ -1023,6 +1024,7 @@ export function createVaultCollabMcpTools(
         clientType: requiredClientType(args, "clientType", "client_type"),
         project: requiredString(args, "project"),
         workspacePath: requiredString(args, "workspacePath", "workspace_path"),
+        role: optionalString(args, "role"),
         agentUid: optionalString(args, "agentUid", "agent_uid") ?? null,
         capabilities: optionalRecord(args, "capabilities") ?? {},
         delivery: {

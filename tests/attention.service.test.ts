@@ -51,6 +51,7 @@ describe("AttentionService", () => {
       clientType: "claude-code",
       project: "Vault Collab",
       workspacePath,
+      role: "reviewer",
       capabilities: {}
     });
   });
@@ -115,6 +116,7 @@ describe("AttentionService", () => {
     const feed = attention.getSessionAttention(worker.sessionUid);
 
     expect(feed.session.sessionUid).toBe(worker.sessionUid);
+    expect(feed.session.role).toBe("reviewer");
     expect(feed.latestEventId).toBeGreaterThan(0);
     expect(feed.items.map((item) => item.kind)).toEqual(
       expect.arrayContaining([

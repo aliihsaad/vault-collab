@@ -582,6 +582,31 @@ describe("vault-collab CLI", () => {
     });
   });
 
+  it("registers a first-class session role from CLI flags", async () => {
+    const session = parseJson<{ role: string; agentRole: string | null }>(
+      await runCli([
+        "register",
+        "--db",
+        dbPath,
+        "--display-name",
+        "Reviewer",
+        "--client-type",
+        "codex",
+        "--project",
+        "Vault Collab",
+        "--workspace-path",
+        cwd,
+        "--role",
+        "reviewer"
+      ])
+    );
+
+    expect(session).toMatchObject({
+      role: "reviewer",
+      agentRole: null
+    });
+  });
+
   it("acknowledges attention through the CLI without leaking tokens", async () => {
     const session = parseJson<{
       sessionUid: string;

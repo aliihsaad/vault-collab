@@ -62,6 +62,7 @@ describe("SessionService", () => {
       workspacePath,
       status: "idle",
       statusDetail: null,
+      role: "implementer",
       capabilities: {
         handoffs: true,
         maxConcurrentHandoffs: 1
@@ -69,6 +70,23 @@ describe("SessionService", () => {
       disconnectedAt: null
     });
     expect(sessions[0]).not.toHaveProperty("sessionToken");
+  });
+
+  it("round-trips a first-class custom session role", () => {
+    const registered = service.registerSession({
+      displayName: "Reviewer terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "reviewer",
+      capabilities: {}
+    });
+
+    expect(registered.role).toBe("reviewer");
+    expect(service.listSessions()[0]).toMatchObject({
+      sessionUid: registered.sessionUid,
+      role: "reviewer"
+    });
   });
 
   it("defaults manually registered sessions to manual polling delivery", () => {

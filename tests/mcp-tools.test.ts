@@ -415,6 +415,7 @@ describe("Vault Collab MCP tools", () => {
         "workspace_path",
         "agentUid",
         "agent_uid",
+        "role",
         "capabilities"
       ])
     );
@@ -601,6 +602,26 @@ describe("Vault Collab MCP tools", () => {
       wakeable: false,
       lastAckEventId: null,
       lastAckAt: null
+    });
+  });
+
+  it("registers a first-class session role through MCP", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const session = structured<{ role: string; agentRole: string | null }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Reviewer",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        role: "reviewer"
+      })
+    );
+
+    expect(session).toMatchObject({
+      role: "reviewer",
+      agentRole: null
     });
   });
 

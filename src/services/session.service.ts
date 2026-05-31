@@ -25,6 +25,7 @@ interface SessionRow {
   project: string;
   project_key: string;
   workspace_path: string;
+  role: string;
   status: SessionStatus;
   status_detail: string | null;
   capabilities_json: string;
@@ -82,6 +83,7 @@ export class SessionService {
           project,
           project_key,
           workspace_path,
+          role,
           status,
           status_detail,
           capabilities_json,
@@ -97,7 +99,7 @@ export class SessionService {
           updated_at,
           disconnected_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -107,6 +109,7 @@ export class SessionService {
         input.project,
         projectKey(input.project),
         input.workspacePath,
+        this.resolveSessionRole(input),
         "idle",
         null,
         JSON.stringify(input.capabilities ?? {}),
@@ -627,6 +630,7 @@ export class SessionService {
       clientType: row.client_type,
       project: row.project,
       workspacePath: row.workspace_path,
+      role: row.role,
       status: row.status,
       statusDetail: row.status_detail,
       capabilities: JSON.parse(row.capabilities_json) as JsonRecord,
@@ -661,6 +665,7 @@ export class SessionService {
           sessions.project,
           sessions.project_key,
           sessions.workspace_path,
+          sessions.role,
           sessions.status,
           sessions.status_detail,
           sessions.capabilities_json,
@@ -679,5 +684,26 @@ export class SessionService {
           sessions.updated_at,
           sessions.disconnected_at
     `;
+  }
+
+  private resolveSessionRole(input: RegisterSessionInput): string {
+    const explicitRole = input.role?.trim();
+    if (explicitRole !== undefined) {
+      if (explicitRole === "") {
+        throw new Error("Session role cannot be empty");
+      }
+      return explicitRole;
+    }
+
+    if (input.agentUid) {
+      const profile = this.db
+        .prepare("SELECT role FROM agent_profiles WHERE agent_uid = ?")
+        .get(input.agentUid) as { role: string } | undefined;
+      if (profile?.role) {
+        return profile.role;
+      }
+    }
+
+    return "implementer";
   }
 }

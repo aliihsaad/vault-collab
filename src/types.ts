@@ -85,6 +85,7 @@ export interface RegisterSessionInput {
   clientType: ClientType;
   project: string;
   workspacePath: string;
+  role?: string;
   capabilities?: JsonRecord;
   agentUid?: string | null;
   delivery?: {
@@ -99,6 +100,7 @@ export interface SessionSnapshot {
   clientType: ClientType;
   project: string;
   workspacePath: string;
+  role: string;
   status: SessionStatus;
   statusDetail: string | null;
   capabilities: JsonRecord;

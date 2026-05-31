@@ -11,6 +11,7 @@ export function applySchema(db: Database.Database): void {
       project TEXT NOT NULL,
       project_key TEXT NOT NULL,
       workspace_path TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'implementer',
       status TEXT NOT NULL,
       status_detail TEXT,
       capabilities_json TEXT NOT NULL,
@@ -190,6 +191,7 @@ export function applySchema(db: Database.Database): void {
   `);
 
   addColumnIfMissing(db, "sessions", "project_key", "TEXT");
+  addColumnIfMissing(db, "sessions", "role", "TEXT NOT NULL DEFAULT 'implementer'");
   addColumnIfMissing(db, "sessions", "agent_uid", "TEXT");
   addColumnIfMissing(db, "sessions", "delivery_mode", "TEXT NOT NULL DEFAULT 'manual_poll'");
   addColumnIfMissing(db, "sessions", "delivery_wakeable", "INTEGER NOT NULL DEFAULT 0");
