@@ -424,8 +424,54 @@ describe("Vault Collab MCP tools", () => {
         "agentUid",
         "agent_uid",
         "role",
+        "roleProfileId",
+        "role_profile_id",
         "capabilities"
       ])
+    );
+  });
+
+  it("documents role profile id inputs on write-path tools", () => {
+    expect(schemaKeys("vault_collab_create_launch_request")).toEqual(
+      expect.arrayContaining(["roleProfileId", "role_profile_id"])
+    );
+    expect(schemaKeys("vault_collab_upsert_agent_profile")).toEqual(
+      expect.arrayContaining(["roleProfileId", "role_profile_id"])
+    );
+    expect(schemaKeys("vault_collab_publish_handoff")).toEqual(
+      expect.arrayContaining(["suggestedRoleProfileId", "suggested_role_profile_id"])
+    );
+  });
+
+  it("returns the expanded 13-role catalog through MCP", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const roles = structured<Array<{ roleProfileId: string; role: string; defaultMutation: string }>>(
+      await tools.callTool("vault_collab_list_agent_roles", {})
+    );
+
+    expect(roles.map((role) => role.roleProfileId)).toEqual([
+      "coordinator",
+      "explorer",
+      "planner",
+      "architect",
+      "implementer",
+      "reviewer",
+      "qa-evaluator",
+      "security-reviewer",
+      "documentation-agent",
+      "runtime-loop-operator",
+      "release-agent",
+      "pattern-mining-agent",
+      "loop-resolver"
+    ]);
+    expect(roles).toContainEqual(
+      expect.objectContaining({
+        roleProfileId: "loop-resolver",
+        role: "loop-resolver",
+        defaultMutation: "read_only"
+      })
     );
   });
 
@@ -1038,22 +1084,31 @@ describe("Vault Collab MCP tools", () => {
     const tools = createVaultCollabMcpTools({ dbPath });
     closeTools = tools.close;
 
-    const roles = structured<Array<{ role: string }>>(
+    const roles = structured<Array<{ role: string; roleProfileId: string }>>(
       await tools.callTool("vault_collab_list_agent_roles", {})
     );
-    expect(roles.map((role) => role.role)).toEqual([
+    expect(roles.map((role) => role.roleProfileId)).toEqual([
       "coordinator",
+      "explorer",
+      "planner",
+      "architect",
       "implementer",
       "reviewer",
-      "sweeper",
-      "observer"
+      "qa-evaluator",
+      "security-reviewer",
+      "documentation-agent",
+      "runtime-loop-operator",
+      "release-agent",
+      "pattern-mining-agent",
+      "loop-resolver"
     ]);
 
-    const reviewer = structured<{ agentUid: string; clientType: string }>(
+    const reviewer = structured<{ agentUid: string; clientType: string; roleProfileId: string }>(
       await tools.callTool("vault_collab_upsert_agent_profile", {
         stableName: "claude-reviewer",
         displayName: "Claude Reviewer",
         role: "reviewer",
+        roleProfileId: "reviewer",
         clientType: "claude-code",
         project: "Vault Collab",
         capabilities: {
@@ -1061,21 +1116,24 @@ describe("Vault Collab MCP tools", () => {
         }
       })
     );
-    const implementer = structured<{ agentUid: string; clientType: string }>(
+    const implementer = structured<{ agentUid: string; clientType: string; roleProfileId: string }>(
       await tools.callTool("vault_collab_upsert_agent_profile", {
         stable_name: "opencode-implementer",
         display_name: "OpenCode Implementer",
         role: "implementer",
+        role_profile_id: "implementer",
         client_type: "opencode",
         project: "Vault Collab"
       })
     );
 
     expect(reviewer).toMatchObject({
-      clientType: "claude-code"
+      clientType: "claude-code",
+      roleProfileId: "reviewer"
     });
     expect(implementer).toMatchObject({
-      clientType: "opencode"
+      clientType: "opencode",
+      roleProfileId: "implementer"
     });
 
     const claude = structured<{ sessionUid: string; sessionToken: string }>(
@@ -1102,12 +1160,14 @@ describe("Vault Collab MCP tools", () => {
       queueKey: string;
       labels: string[];
       queuePosition: number;
+      suggestedRoleProfileId: string | null;
     }>(
       await tools.callTool("vault_collab_publish_handoff", {
         shortPrompt: "Discuss MCP contract",
         sourceProject: "Vault Collab",
         targetProject: "Vault Collab",
         sourceSessionUid: claude.sessionUid,
+        suggested_role_profile_id: "reviewer",
         queueKey: "phase-1",
         labels: ["mcp", "discussion"],
         queuePosition: 500
@@ -1117,7 +1177,8 @@ describe("Vault Collab MCP tools", () => {
     expect(published).toMatchObject({
       queueKey: "phase-1",
       labels: ["mcp", "discussion"],
-      queuePosition: 500
+      queuePosition: 500,
+      suggestedRoleProfileId: "reviewer"
     });
 
     const metadata = structured<{ labels: string[]; dependsOnHandoffUid: string }>(

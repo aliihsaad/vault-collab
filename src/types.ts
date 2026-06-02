@@ -43,18 +43,169 @@ export type BuiltInAgentRole =
   | "sweeper"
   | "observer";
 
+export const coreRoleProfileIds = [
+  "coordinator",
+  "explorer",
+  "planner",
+  "architect",
+  "implementer",
+  "reviewer",
+  "qa-evaluator",
+  "security-reviewer",
+  "documentation-agent",
+  "runtime-loop-operator",
+  "release-agent",
+  "pattern-mining-agent",
+  "loop-resolver"
+] as const;
+
+export type CoreRoleProfileId = (typeof coreRoleProfileIds)[number];
+export type RoleProfileStatus = "active" | "archived";
+export type RoleMutationPolicy =
+  | "read_only"
+  | "coordination_write"
+  | "workspace_write"
+  | "approval_required";
+export type RoleSupportLevel =
+  | "native"
+  | "adapter_backed"
+  | "instruction_backed"
+  | "reference_only";
+export type RoleCapability =
+  | "read_files"
+  | "search_files"
+  | "inspect_graph"
+  | "vault_memory_read"
+  | "vault_memory_write"
+  | "vault_collab_read"
+  | "vault_collab_write"
+  | "publish_handoff"
+  | "claim_handoff"
+  | "create_discussion"
+  | "run_tests"
+  | "browser_check"
+  | "edit_files"
+  | "shell_commands"
+  | "security_scan"
+  | "release_coordination"
+  | "pattern_mining"
+  | "external_connector_review"
+  | "resolve_loop";
+
+export type EvidenceKind =
+  | "source_files"
+  | "vault_memory"
+  | "graph_context"
+  | "test_output"
+  | "diff_summary"
+  | "runtime_artifact"
+  | "security_findings"
+  | "acceptance_criteria"
+  | "discussion_decision";
+
+export interface RoleToolGrant {
+  capability: RoleCapability;
+  defaultAllowed: boolean;
+  approvalRequired: boolean;
+  notes?: string;
+}
+
+export interface RoleOutputContract {
+  primary: string;
+  requiredFields: string[];
+  vaultMemoryType?: "artifact" | "plan" | "decision" | "handoff" | "summary" | "session";
+  publishesHandoff?: boolean;
+}
+
+export interface RoleDependencyRule {
+  roleProfileId: CoreRoleProfileId;
+  reason: string;
+  blocksCompletionUntil?: boolean;
+}
+
+export interface RoleConfidenceGate {
+  gate: string;
+  required: boolean;
+  failureStatus?: "blocked" | "awaiting_user" | "verification_needed";
+}
+
+export interface RoleProviderSupport {
+  clientType: ClientType;
+  supportLevel: RoleSupportLevel;
+  defaultPermissionMode?: string | null;
+  notes?: string | null;
+}
+
+export interface RoleSkillReference {
+  skill: string;
+  path: string;
+  triggerCondition: string;
+}
+
+export interface RoleProfileSkills {
+  primary: RoleSkillReference[];
+  secondary: RoleSkillReference[];
+}
+
+export interface RoleProfile {
+  roleProfileId: CoreRoleProfileId;
+  schemaVersion: "vault_collab.role_profile.v1";
+  displayName: string;
+  purpose: string;
+  lifecycleStage:
+    | "coordination"
+    | "discovery"
+    | "planning"
+    | "implementation"
+    | "review"
+    | "verification"
+    | "operations"
+    | "release"
+    | "learning";
+  defaultMutation: RoleMutationPolicy;
+  capabilitySet: RoleCapability[];
+  toolGrants: RoleToolGrant[];
+  triggerLabels: string[];
+  requiresEvidence: EvidenceKind[];
+  outputContract: RoleOutputContract;
+  stopConditions: string[];
+  confidenceGates: RoleConfidenceGate[];
+  requiresRoles: RoleDependencyRule[];
+  suggestedRoles: RoleDependencyRule[];
+  suggestedNextRoles: CoreRoleProfileId[];
+  skills: RoleProfileSkills;
+  providerSupport: RoleProviderSupport[];
+  status: RoleProfileStatus;
+}
+
+export interface RoleLabelRoute {
+  routeUid: string;
+  label: string;
+  roleProfileId: CoreRoleProfileId;
+  requirementKind: "suggested" | "required";
+  priority: number;
+  evidenceRequired: EvidenceKind[];
+  blocksCompletion: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type AgentProfileStatus = "active" | "archived";
 
 export interface AgentRoleDefinition {
-  role: BuiltInAgentRole;
+  role: string;
+  roleProfileId: string;
   label: string;
   description: string;
+  defaultMutation: RoleMutationPolicy;
+  triggerLabels: string[];
 }
 
 export interface UpsertAgentProfileInput {
   stableName: string;
   displayName: string;
   role?: string;
+  roleProfileId?: string | null;
   clientType?: ClientType | null;
   project?: string | null;
   description?: string | null;
@@ -68,6 +219,7 @@ export interface AgentProfile {
   stableName: string;
   displayName: string;
   role: string;
+  roleProfileId: string | null;
   clientType: ClientType | null;
   project: string | null;
   description: string | null;
@@ -91,6 +243,7 @@ export interface RegisterSessionInput {
   project: string;
   workspacePath: string;
   role?: string;
+  roleProfileId?: string | null;
   capabilities?: JsonRecord;
   agentUid?: string | null;
   delivery?: {
@@ -106,6 +259,7 @@ export interface SessionSnapshot {
   project: string;
   workspacePath: string;
   role: string;
+  roleProfileId: string | null;
   status: SessionStatus;
   statusDetail: string | null;
   capabilities: JsonRecord;
@@ -275,6 +429,7 @@ export interface CreateLaunchRequestInput {
   project: string;
   workspacePath: string;
   role?: string | null;
+  roleProfileId?: string | null;
   initialInstructions: string;
   permissionMode: string;
   commandPreview?: string | null;
@@ -291,6 +446,7 @@ export interface LaunchRequestRecord {
   project: string;
   workspacePath: string;
   role: string | null;
+  roleProfileId: string | null;
   initialInstructions: string;
   permissionMode: string;
   commandPreview: string | null;
@@ -390,6 +546,7 @@ export interface PublishHandoffInput {
   sourceSessionUid?: string | null;
   suggestedSessionUid?: string | null;
   suggestedClientType?: ClientType | null;
+  suggestedRoleProfileId?: string | null;
   vaultMemoryUid?: string | null;
   queueKey?: string;
   labels?: string[];
@@ -420,6 +577,7 @@ export interface HandoffRecord {
   sourceSessionUid: string | null;
   suggestedSessionUid: string | null;
   suggestedClientType: ClientType | null;
+  suggestedRoleProfileId: string | null;
   queueKey: string;
   labels: string[];
   queuePosition: number | null;

@@ -4,6 +4,10 @@ import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import { progressHandoffStatuses } from "../types.js";
 import type { EventService } from "./event.service.js";
+import {
+  firstSuggestedRoleProfileIdForLabels,
+  resolveRoleProfileIdFromDb
+} from "./role-profile-resolution.js";
 import type {
   ClientType,
   HandoffFilters,
@@ -34,6 +38,7 @@ interface HandoffRow {
   source_session_uid: string | null;
   suggested_session_uid: string | null;
   suggested_client_type: ClientType | null;
+  suggested_role_profile_id: string | null;
   queue_key: string;
   labels_json: string;
   queue_position: number | null;
@@ -106,6 +111,10 @@ export class HandoffService {
     const relatedProjects = normalizeRelatedProjects(input);
     const queuePosition =
       input.queuePosition ?? this.nextQueuePosition(input.targetProject, queueKey);
+    const labels = input.labels ?? [];
+    const suggestedRoleProfileId =
+      resolveRoleProfileIdFromDb(this.db, input.suggestedRoleProfileId) ??
+      firstSuggestedRoleProfileIdForLabels(this.db, labels);
 
     this.db
       .prepare(
@@ -123,6 +132,7 @@ export class HandoffService {
           source_session_uid,
           suggested_session_uid,
           suggested_client_type,
+          suggested_role_profile_id,
           queue_key,
           labels_json,
           queue_position,
@@ -141,7 +151,7 @@ export class HandoffService {
           resolved_at,
           stale_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -157,8 +167,9 @@ export class HandoffService {
         input.sourceSessionUid ?? null,
         input.suggestedSessionUid ?? null,
         input.suggestedClientType ?? null,
+        suggestedRoleProfileId,
         queueKey,
-        JSON.stringify(input.labels ?? []),
+        JSON.stringify(labels),
         queuePosition,
         input.dependsOnHandoffUid ?? null,
         "available",
@@ -1176,6 +1187,7 @@ export class HandoffService {
       sourceSessionUid: row.source_session_uid,
       suggestedSessionUid: row.suggested_session_uid,
       suggestedClientType: row.suggested_client_type,
+      suggestedRoleProfileId: row.suggested_role_profile_id,
       queueKey: row.queue_key,
       labels: JSON.parse(row.labels_json) as string[],
       queuePosition: row.queue_position,

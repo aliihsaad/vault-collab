@@ -1,6 +1,13 @@
 import type Database from "better-sqlite3";
 import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
+import {
+  builtInRoleLabelRoutes,
+  builtInRoleProfileAliases,
+  builtInRoleProfiles,
+  labelRouteUid
+} from "../role-profiles.js";
+import type { CoreRoleProfileId } from "../types.js";
 
 export function applySchema(db: Database.Database): void {
   db.exec(`
@@ -52,6 +59,73 @@ export function applySchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_agent_profiles_project ON agent_profiles(project);
     CREATE INDEX IF NOT EXISTS idx_agent_profiles_role ON agent_profiles(role);
     CREATE INDEX IF NOT EXISTS idx_agent_profiles_status ON agent_profiles(status);
+
+    CREATE TABLE IF NOT EXISTS role_profiles (
+      role_profile_id TEXT PRIMARY KEY,
+      schema_version TEXT NOT NULL DEFAULT 'vault_collab.role_profile.v1',
+      display_name TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      lifecycle_stage TEXT NOT NULL,
+      default_mutation TEXT NOT NULL,
+      capability_set_json TEXT NOT NULL DEFAULT '[]',
+      tool_grants_json TEXT NOT NULL DEFAULT '[]',
+      trigger_labels_json TEXT NOT NULL DEFAULT '[]',
+      requires_evidence_json TEXT NOT NULL DEFAULT '[]',
+      output_contract_json TEXT NOT NULL DEFAULT '{}',
+      stop_conditions_json TEXT NOT NULL DEFAULT '[]',
+      confidence_gates_json TEXT NOT NULL DEFAULT '[]',
+      requires_roles_json TEXT NOT NULL DEFAULT '[]',
+      suggested_roles_json TEXT NOT NULL DEFAULT '[]',
+      suggested_next_roles_json TEXT NOT NULL DEFAULT '[]',
+      skills_json TEXT NOT NULL DEFAULT '{"primary":[],"secondary":[]}',
+      status TEXT NOT NULL DEFAULT 'active',
+      source TEXT NOT NULL DEFAULT 'built_in',
+      sort_order INTEGER NOT NULL DEFAULT 1000,
+      is_overridden INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS role_provider_support (
+      role_profile_id TEXT NOT NULL,
+      client_type TEXT NOT NULL,
+      support_level TEXT NOT NULL,
+      default_permission_mode TEXT,
+      notes TEXT,
+      capabilities_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (role_profile_id, client_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS role_label_routes (
+      route_uid TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      role_profile_id TEXT NOT NULL,
+      requirement_kind TEXT NOT NULL DEFAULT 'suggested',
+      priority INTEGER NOT NULL DEFAULT 1000,
+      evidence_required_json TEXT NOT NULL DEFAULT '[]',
+      blocks_completion INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS role_profile_aliases (
+      alias TEXT PRIMARY KEY,
+      role_profile_id TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'legacy',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_role_profiles_status ON role_profiles(status);
+    CREATE INDEX IF NOT EXISTS idx_role_profiles_lifecycle_stage ON role_profiles(lifecycle_stage);
+    CREATE INDEX IF NOT EXISTS idx_role_provider_support_client ON role_provider_support(client_type);
+    CREATE INDEX IF NOT EXISTS idx_role_label_routes_label ON role_label_routes(label);
+    CREATE INDEX IF NOT EXISTS idx_role_label_routes_role ON role_label_routes(role_profile_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_role_label_routes_unique_label_profile
+      ON role_label_routes(label, role_profile_id);
 
     CREATE TABLE IF NOT EXISTS launch_requests (
       launch_request_uid TEXT PRIMARY KEY,
@@ -192,13 +266,22 @@ export function applySchema(db: Database.Database): void {
 
   addColumnIfMissing(db, "sessions", "project_key", "TEXT");
   addColumnIfMissing(db, "sessions", "role", "TEXT NOT NULL DEFAULT 'implementer'");
+  addColumnIfMissing(db, "sessions", "role_profile_id", "TEXT");
   addColumnIfMissing(db, "sessions", "agent_uid", "TEXT");
   addColumnIfMissing(db, "sessions", "delivery_mode", "TEXT NOT NULL DEFAULT 'manual_poll'");
   addColumnIfMissing(db, "sessions", "delivery_wakeable", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "sessions", "delivery_last_ack_event_id", "INTEGER");
   addColumnIfMissing(db, "sessions", "delivery_last_ack_at", "TEXT");
   addColumnIfMissing(db, "agent_profiles", "project_key", "TEXT");
+  addColumnIfMissing(db, "agent_profiles", "role_profile_id", "TEXT");
+  addColumnIfMissing(
+    db,
+    "role_profiles",
+    "skills_json",
+    `TEXT NOT NULL DEFAULT '{"primary":[],"secondary":[]}'`
+  );
   addColumnIfMissing(db, "launch_requests", "command_preview", "TEXT");
+  addColumnIfMissing(db, "launch_requests", "role_profile_id", "TEXT");
   addColumnIfMissing(db, "launch_requests", "requested_capabilities_json", "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, "launch_requests", "approval_policy_version", "TEXT");
   addColumnIfMissing(db, "launch_requests", "approval_snapshot_json", "TEXT");
@@ -208,10 +291,12 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "handoffs", "labels_json", "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, "handoffs", "queue_position", "INTEGER");
   addColumnIfMissing(db, "handoffs", "depends_on_handoff_uid", "TEXT");
+  addColumnIfMissing(db, "handoffs", "suggested_role_profile_id", "TEXT");
   addColumnIfMissing(db, "handoffs", "lease_expires_at", "TEXT");
   addColumnIfMissing(db, "discussion_threads", "project_key", "TEXT");
 
   backfillProjectRoutingKeys(db);
+  backfillRoleProfileIds(db);
   backfillClaimedHandoffLeases(db);
 
   db.exec(`
@@ -228,6 +313,188 @@ export function applySchema(db: Database.Database): void {
       ON handoffs(lease_expires_at)
       WHERE lease_expires_at IS NOT NULL;
   `);
+}
+
+export function seedRoleProfiles(
+  db: Database.Database,
+  clock: () => Date = () => new Date()
+): void {
+  const now = clock().toISOString();
+  const insertProfile = db.prepare(
+    `
+    INSERT INTO role_profiles (
+      role_profile_id,
+      schema_version,
+      display_name,
+      purpose,
+      lifecycle_stage,
+      default_mutation,
+      capability_set_json,
+      tool_grants_json,
+      trigger_labels_json,
+      requires_evidence_json,
+      output_contract_json,
+      stop_conditions_json,
+      confidence_gates_json,
+      requires_roles_json,
+      suggested_roles_json,
+      suggested_next_roles_json,
+      skills_json,
+      status,
+      source,
+      sort_order,
+      is_overridden,
+      created_at,
+      updated_at,
+      archived_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'built_in', ?, 0, ?, ?, NULL)
+    ON CONFLICT(role_profile_id) DO UPDATE SET
+      schema_version = excluded.schema_version,
+      display_name = excluded.display_name,
+      purpose = excluded.purpose,
+      lifecycle_stage = excluded.lifecycle_stage,
+      default_mutation = excluded.default_mutation,
+      capability_set_json = excluded.capability_set_json,
+      tool_grants_json = excluded.tool_grants_json,
+      trigger_labels_json = excluded.trigger_labels_json,
+      requires_evidence_json = excluded.requires_evidence_json,
+      output_contract_json = excluded.output_contract_json,
+      stop_conditions_json = excluded.stop_conditions_json,
+      confidence_gates_json = excluded.confidence_gates_json,
+      requires_roles_json = excluded.requires_roles_json,
+      suggested_roles_json = excluded.suggested_roles_json,
+      suggested_next_roles_json = excluded.suggested_next_roles_json,
+      skills_json = excluded.skills_json,
+      status = excluded.status,
+      sort_order = excluded.sort_order,
+      updated_at = excluded.updated_at,
+      archived_at = excluded.archived_at
+    WHERE role_profiles.source = 'built_in'
+      AND role_profiles.is_overridden = 0
+  `
+  );
+  const insertProviderSupport = db.prepare(
+    `
+    INSERT INTO role_provider_support (
+      role_profile_id,
+      client_type,
+      support_level,
+      default_permission_mode,
+      notes,
+      capabilities_json,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(role_profile_id, client_type) DO UPDATE SET
+      support_level = excluded.support_level,
+      default_permission_mode = excluded.default_permission_mode,
+      notes = excluded.notes,
+      capabilities_json = excluded.capabilities_json,
+      updated_at = excluded.updated_at
+  `
+  );
+  const insertAlias = db.prepare(
+    `
+    INSERT INTO role_profile_aliases (
+      alias,
+      role_profile_id,
+      source,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(alias) DO UPDATE SET
+      role_profile_id = excluded.role_profile_id,
+      source = excluded.source,
+      updated_at = excluded.updated_at
+  `
+  );
+  const insertRoute = db.prepare(
+    `
+    INSERT INTO role_label_routes (
+      route_uid,
+      label,
+      role_profile_id,
+      requirement_kind,
+      priority,
+      evidence_required_json,
+      blocks_completion,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(label, role_profile_id) DO UPDATE SET
+      route_uid = excluded.route_uid,
+      requirement_kind = excluded.requirement_kind,
+      priority = excluded.priority,
+      evidence_required_json = excluded.evidence_required_json,
+      blocks_completion = excluded.blocks_completion,
+      updated_at = excluded.updated_at
+  `
+  );
+
+  const seed = db.transaction(() => {
+    for (const [index, profile] of builtInRoleProfiles.entries()) {
+      insertProfile.run(
+        profile.roleProfileId,
+        profile.schemaVersion,
+        profile.displayName,
+        profile.purpose,
+        profile.lifecycleStage,
+        profile.defaultMutation,
+        JSON.stringify(profile.capabilitySet),
+        JSON.stringify(profile.toolGrants),
+        JSON.stringify(profile.triggerLabels),
+        JSON.stringify(profile.requiresEvidence),
+        JSON.stringify(profile.outputContract),
+        JSON.stringify(profile.stopConditions),
+        JSON.stringify(profile.confidenceGates),
+        JSON.stringify(profile.requiresRoles),
+        JSON.stringify(profile.suggestedRoles),
+        JSON.stringify(profile.suggestedNextRoles),
+        JSON.stringify(profile.skills),
+        profile.status,
+        (index + 1) * 100,
+        now,
+        now
+      );
+
+      for (const providerSupport of profile.providerSupport) {
+        insertProviderSupport.run(
+          profile.roleProfileId,
+          providerSupport.clientType,
+          providerSupport.supportLevel,
+          providerSupport.defaultPermissionMode ?? null,
+          providerSupport.notes ?? null,
+          JSON.stringify(profile.capabilitySet),
+          now,
+          now
+        );
+      }
+    }
+
+    for (const alias of builtInRoleProfileAliases) {
+      insertAlias.run(alias.alias.toLowerCase(), alias.roleProfileId, alias.source, now, now);
+    }
+
+    for (const route of builtInRoleLabelRoutes) {
+      insertRoute.run(
+        labelRouteUid(route.label, route.roleProfileId),
+        route.label.toLowerCase(),
+        route.roleProfileId,
+        route.requirementKind,
+        route.priority,
+        JSON.stringify(route.evidenceRequired ?? []),
+        route.blocksCompletion === true ? 1 : 0,
+        now,
+        now
+      );
+    }
+  });
+
+  seed();
 }
 
 function addColumnIfMissing(
@@ -265,6 +532,81 @@ function backfillClaimedHandoffLeases(db: Database.Database): void {
       AND status IN ('claimed', 'in_progress', 'blocked', 'awaiting_user', 'verification_needed')
   `
   ).run(leaseExpiresAt);
+}
+
+function backfillRoleProfileIds(db: Database.Database): void {
+  backfillRoleProfileColumn(db, "sessions");
+  backfillRoleProfileColumn(db, "agent_profiles");
+  backfillRoleProfileColumn(db, "launch_requests");
+}
+
+function backfillRoleProfileColumn(db: Database.Database, table: string): void {
+  if (!columnExists(db, table, "role") || !columnExists(db, table, "role_profile_id")) {
+    return;
+  }
+
+  const rows = db
+    .prepare(
+      `
+      SELECT rowid AS rowid, role AS role
+      FROM ${table}
+      WHERE role_profile_id IS NULL
+        AND role IS NOT NULL
+        AND role <> ''
+    `
+    )
+    .all() as Array<{ rowid: number; role: string | null }>;
+  const update = db.prepare(`UPDATE ${table} SET role_profile_id = ? WHERE rowid = ?`);
+  const backfill = db.transaction(() => {
+    for (const row of rows) {
+      const roleProfileId = legacyRoleToProfileId(row.role);
+      if (roleProfileId) {
+        update.run(roleProfileId, row.rowid);
+      }
+    }
+  });
+
+  backfill();
+}
+
+function legacyRoleToProfileId(role: string | null): CoreRoleProfileId | null {
+  switch (role?.trim().toLowerCase()) {
+    case "coordinator":
+      return "coordinator";
+    case "explorer":
+      return "explorer";
+    case "planner":
+      return "planner";
+    case "architect":
+      return "architect";
+    case "implementer":
+      return "implementer";
+    case "reviewer":
+    case "observer":
+      return "reviewer";
+    case "qa":
+    case "qa-evaluator":
+      return "qa-evaluator";
+    case "security":
+    case "security-reviewer":
+      return "security-reviewer";
+    case "docs":
+    case "documentation-agent":
+      return "documentation-agent";
+    case "sweeper":
+    case "runtime-agent":
+    case "runtime-loop-operator":
+      return "runtime-loop-operator";
+    case "release-agent":
+      return "release-agent";
+    case "pattern-miner":
+    case "pattern-mining-agent":
+      return "pattern-mining-agent";
+    case "loop-resolver":
+      return "loop-resolver";
+    default:
+      return null;
+  }
 }
 
 function backfillProjectKeyColumn(

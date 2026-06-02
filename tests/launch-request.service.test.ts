@@ -148,6 +148,7 @@ describe("LaunchRequestService", () => {
       project: "Vault Collab",
       workspacePath,
       role: "implementer",
+      roleProfileId: "implementer",
       initialInstructions: "Implement the launch broker foundation.",
       permissionMode: "workspace-write",
       commandPreview: "codex --model gpt-5-codex",
@@ -167,6 +168,11 @@ describe("LaunchRequestService", () => {
       updatedAt: "2026-05-30T09:00:00.000Z"
     });
     expect(request).not.toHaveProperty("sessionToken");
+    expect(
+      db.prepare("SELECT role, role_profile_id FROM launch_requests WHERE launch_request_uid = ?").get(
+        request.launchRequestUid
+      )
+    ).toEqual({ role: "implementer", role_profile_id: "implementer" });
 
     expect(() =>
       service.createLaunchRequest({
@@ -196,6 +202,52 @@ describe("LaunchRequestService", () => {
 
     expect(launchEvents).toHaveLength(1);
     expect(JSON.stringify(launchEvents)).not.toContain(requester.sessionToken);
+  });
+
+  it("persists canonical role profile ids for launch requests at write time", () => {
+    const qaRequest = service.createLaunchRequest({
+      requestedBySessionUid: requester.sessionUid,
+      sessionToken: requester.sessionToken,
+      provider: "codex",
+      model: "gpt-5-codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "qa",
+      initialInstructions: "Verify the implementation.",
+      permissionMode: "read-only"
+    });
+    const customRequest = service.createLaunchRequest({
+      requestedBySessionUid: requester.sessionUid,
+      sessionToken: requester.sessionToken,
+      provider: "codex",
+      model: "gpt-5-codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "bespoke-launch-role",
+      initialInstructions: "Handle a custom workflow.",
+      permissionMode: "read-only"
+    });
+
+    expect(qaRequest).toMatchObject({
+      role: "qa",
+      roleProfileId: "qa-evaluator"
+    });
+    expect(customRequest).toMatchObject({
+      role: "bespoke-launch-role",
+      roleProfileId: null
+    });
+    expect(service.listLaunchRequests({ project: "vault-collab" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          launchRequestUid: qaRequest.launchRequestUid,
+          roleProfileId: "qa-evaluator"
+        }),
+        expect.objectContaining({
+          launchRequestUid: customRequest.launchRequestUid,
+          roleProfileId: null
+        })
+      ])
+    );
   });
 
   it("requires approval capability and broker capability for launch lifecycle transitions", () => {

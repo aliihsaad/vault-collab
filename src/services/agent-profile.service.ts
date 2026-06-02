@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
 import { projectKey } from "../project-key.js";
+import { roleProfileToDefinition } from "../role-profiles.js";
 import type { EventService } from "./event.service.js";
+import { resolveRoleProfileIdFromDb } from "./role-profile-resolution.js";
 import type {
   AgentProfile,
   AgentProfileFilters,
@@ -10,6 +12,8 @@ import type {
   BuiltInAgentRole,
   ClientType,
   JsonRecord,
+  RoleLabelRoute,
+  RoleProfile,
   UpsertAgentProfileInput
 } from "../types.js";
 
@@ -18,6 +22,7 @@ interface AgentProfileRow {
   stable_name: string;
   display_name: string;
   role: string;
+  role_profile_id: string | null;
   client_type: ClientType | null;
   project: string | null;
   project_key: string | null;
@@ -30,33 +35,45 @@ interface AgentProfileRow {
   archived_at: string | null;
 }
 
-const builtInRoleDefinitions: AgentRoleDefinition[] = [
-  {
-    role: "coordinator",
-    label: "Coordinator",
-    description: "Routes work, tracks sequencing, and asks for user decisions."
-  },
-  {
-    role: "implementer",
-    label: "Implementer",
-    description: "Builds scoped code changes and reports verification evidence."
-  },
-  {
-    role: "reviewer",
-    label: "Reviewer",
-    description: "Checks contracts, safety, regressions, and missing tests."
-  },
-  {
-    role: "sweeper",
-    label: "Sweeper",
-    description: "Finds loose ends, stale handoffs, and follow-up cleanup."
-  },
-  {
-    role: "observer",
-    label: "Observer",
-    description: "Watches state without owning implementation work."
-  }
-];
+interface RoleProfileRow {
+  role_profile_id: RoleProfile["roleProfileId"];
+  schema_version: RoleProfile["schemaVersion"];
+  display_name: string;
+  purpose: string;
+  lifecycle_stage: RoleProfile["lifecycleStage"];
+  default_mutation: RoleProfile["defaultMutation"];
+  capability_set_json: string;
+  tool_grants_json: string;
+  trigger_labels_json: string;
+  requires_evidence_json: string;
+  output_contract_json: string;
+  stop_conditions_json: string;
+  confidence_gates_json: string;
+  requires_roles_json: string;
+  suggested_roles_json: string;
+  suggested_next_roles_json: string;
+  skills_json: string;
+  status: RoleProfile["status"];
+}
+
+interface RoleProviderSupportRow {
+  client_type: RoleProfile["providerSupport"][number]["clientType"];
+  support_level: RoleProfile["providerSupport"][number]["supportLevel"];
+  default_permission_mode: string | null;
+  notes: string | null;
+}
+
+interface RoleLabelRouteRow {
+  route_uid: string;
+  label: string;
+  role_profile_id: RoleLabelRoute["roleProfileId"];
+  requirement_kind: RoleLabelRoute["requirementKind"];
+  priority: number;
+  evidence_required_json: string;
+  blocks_completion: 0 | 1;
+  created_at: string;
+  updated_at: string;
+}
 
 export class AgentProfileService {
   constructor(
@@ -66,13 +83,59 @@ export class AgentProfileService {
   ) {}
 
   listRoleDefinitions(): AgentRoleDefinition[] {
-    return builtInRoleDefinitions.map((role) => ({ ...role }));
+    return this.listRoleProfiles().map((role) => roleProfileToDefinition(role));
+  }
+
+  listRoleProfiles(): RoleProfile[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM role_profiles
+        WHERE status = 'active'
+        ORDER BY sort_order ASC, role_profile_id ASC
+      `
+      )
+      .all() as RoleProfileRow[];
+
+    return rows.map((row) => this.mapRoleProfileRow(row));
+  }
+
+  resolveRoleProfileId(roleOrAlias: string | null | undefined): string | null {
+    return resolveRoleProfileIdFromDb(this.db, roleOrAlias);
+  }
+
+  listRoleLabelRoutes(label?: string): RoleLabelRoute[] {
+    const normalized = label?.trim().toLowerCase();
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM role_label_routes
+        ${normalized ? "WHERE label = ?" : ""}
+        ORDER BY priority ASC, label ASC, role_profile_id ASC
+      `
+      )
+      .all(...(normalized ? [normalized] : [])) as RoleLabelRouteRow[];
+
+    return rows.map((row) => ({
+      routeUid: row.route_uid,
+      label: row.label,
+      roleProfileId: row.role_profile_id,
+      requirementKind: row.requirement_kind,
+      priority: row.priority,
+      evidenceRequired: JSON.parse(row.evidence_required_json) as EvidenceArray,
+      blocksCompletion: row.blocks_completion === 1,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }));
   }
 
   upsertAgentProfile(input: UpsertAgentProfileInput): AgentProfile {
     const now = this.now();
     const existing = this.findByStableName(input.stableName);
     const role = input.role ?? ("implementer" satisfies BuiltInAgentRole);
+    const roleProfileId = this.resolveRoleProfileId(input.roleProfileId ?? role);
     const status = input.status ?? "active";
     const archivedAt = status === "archived" ? now : null;
     const profileProjectKey = input.project ? projectKey(input.project) : null;
@@ -84,6 +147,7 @@ export class AgentProfileService {
           UPDATE agent_profiles
           SET display_name = ?,
               role = ?,
+              role_profile_id = ?,
               client_type = ?,
               project = ?,
               project_key = ?,
@@ -99,6 +163,7 @@ export class AgentProfileService {
         .run(
           input.displayName,
           role,
+          roleProfileId,
           input.clientType ?? null,
           input.project ?? null,
           profileProjectKey,
@@ -124,6 +189,7 @@ export class AgentProfileService {
           stable_name,
           display_name,
           role,
+          role_profile_id,
           client_type,
           project,
           project_key,
@@ -135,7 +201,7 @@ export class AgentProfileService {
           updated_at,
           archived_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -143,6 +209,7 @@ export class AgentProfileService {
         input.stableName,
         input.displayName,
         role,
+        roleProfileId,
         input.clientType ?? null,
         input.project ?? null,
         profileProjectKey,
@@ -235,6 +302,7 @@ export class AgentProfileService {
       stableName: row.stable_name,
       displayName: row.display_name,
       role: row.role,
+      roleProfileId: row.role_profile_id,
       clientType: row.client_type,
       project: row.project,
       description: row.description,
@@ -247,7 +315,57 @@ export class AgentProfileService {
     };
   }
 
+  private mapRoleProfileRow(row: RoleProfileRow): RoleProfile {
+    return {
+      roleProfileId: row.role_profile_id,
+      schemaVersion: row.schema_version,
+      displayName: row.display_name,
+      purpose: row.purpose,
+      lifecycleStage: row.lifecycle_stage,
+      defaultMutation: row.default_mutation,
+      capabilitySet: JSON.parse(row.capability_set_json) as RoleProfile["capabilitySet"],
+      toolGrants: JSON.parse(row.tool_grants_json) as RoleProfile["toolGrants"],
+      triggerLabels: JSON.parse(row.trigger_labels_json) as RoleProfile["triggerLabels"],
+      requiresEvidence: JSON.parse(row.requires_evidence_json) as RoleProfile["requiresEvidence"],
+      outputContract: JSON.parse(row.output_contract_json) as RoleProfile["outputContract"],
+      stopConditions: JSON.parse(row.stop_conditions_json) as RoleProfile["stopConditions"],
+      confidenceGates: JSON.parse(row.confidence_gates_json) as RoleProfile["confidenceGates"],
+      requiresRoles: JSON.parse(row.requires_roles_json) as RoleProfile["requiresRoles"],
+      suggestedRoles: JSON.parse(row.suggested_roles_json) as RoleProfile["suggestedRoles"],
+      suggestedNextRoles: JSON.parse(row.suggested_next_roles_json) as RoleProfile["suggestedNextRoles"],
+      skills: JSON.parse(row.skills_json) as RoleProfile["skills"],
+      providerSupport: this.listProviderSupport(row.role_profile_id),
+      status: row.status
+    };
+  }
+
+  private listProviderSupport(roleProfileId: string): RoleProfile["providerSupport"] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT
+          client_type,
+          support_level,
+          default_permission_mode,
+          notes
+        FROM role_provider_support
+        WHERE role_profile_id = ?
+        ORDER BY client_type ASC
+      `
+      )
+      .all(roleProfileId) as RoleProviderSupportRow[];
+
+    return rows.map((row) => ({
+      clientType: row.client_type,
+      supportLevel: row.support_level,
+      defaultPermissionMode: row.default_permission_mode,
+      notes: row.notes
+    }));
+  }
+
   private now(): string {
     return this.clock().toISOString();
   }
 }
+
+type EvidenceArray = RoleLabelRoute["evidenceRequired"];

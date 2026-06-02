@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
 import { projectKey } from "../project-key.js";
+import { resolveRoleProfileIdFromDb } from "./role-profile-resolution.js";
 import type { EventService } from "./event.service.js";
 import type {
   ClientType,
@@ -25,6 +26,7 @@ interface LaunchRequestRow {
   effort_level: string | null;
   workspace_path: string;
   role: string | null;
+  role_profile_id: string | null;
   initial_instructions: string;
   permission_mode: string;
   command_preview: string | null;
@@ -159,6 +161,8 @@ export class LaunchRequestService {
 
     const now = this.now();
     const launchRequestUid = `vc_launch_${randomUUID()}`;
+    const role = input.role ?? input.roleProfileId ?? null;
+    const roleProfileId = resolveRoleProfileIdFromDb(this.db, input.roleProfileId ?? role);
 
     this.db
       .prepare(
@@ -172,6 +176,7 @@ export class LaunchRequestService {
           effort_level,
           workspace_path,
           role,
+          role_profile_id,
           initial_instructions,
           permission_mode,
           command_preview,
@@ -193,7 +198,7 @@ export class LaunchRequestService {
           started_at,
           completed_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -204,7 +209,8 @@ export class LaunchRequestService {
         input.model,
         input.effortLevel ?? null,
         input.workspacePath,
-        input.role ?? null,
+        role,
+        roleProfileId,
         input.initialInstructions,
         input.permissionMode,
         input.commandPreview ?? null,
@@ -905,6 +911,7 @@ export class LaunchRequestService {
       project: row.project,
       workspacePath: row.workspace_path,
       role: row.role,
+      roleProfileId: row.role_profile_id,
       initialInstructions: row.initial_instructions,
       permissionMode: row.permission_mode,
       commandPreview: row.command_preview,
@@ -923,6 +930,7 @@ export class LaunchRequestService {
       project: row.project,
       workspacePath: row.workspace_path,
       role: row.role,
+      roleProfileId: row.role_profile_id,
       initialInstructions: row.initial_instructions,
       permissionMode: row.permission_mode,
       commandPreview: row.command_preview,

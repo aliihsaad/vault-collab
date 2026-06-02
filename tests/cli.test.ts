@@ -585,7 +585,7 @@ describe("vault-collab CLI", () => {
   });
 
   it("registers a first-class session role from CLI flags", async () => {
-    const session = parseJson<{ role: string; agentRole: string | null }>(
+    const session = parseJson<{ role: string; roleProfileId: string | null; agentRole: string | null }>(
       await runCli([
         "register",
         "--db",
@@ -599,12 +599,15 @@ describe("vault-collab CLI", () => {
         "--workspace-path",
         cwd,
         "--role",
+        "reviewer",
+        "--role-profile-id",
         "reviewer"
       ])
     );
 
     expect(session).toMatchObject({
       role: "reviewer",
+      roleProfileId: "reviewer",
       agentRole: null
     });
   });
@@ -1518,7 +1521,7 @@ describe("vault-collab CLI", () => {
       ])
     );
 
-    const request = parseJson<{ launchRequestUid: string; status: string }>(
+    const request = parseJson<{ launchRequestUid: string; status: string; roleProfileId: string | null }>(
       await runCli([
         "launch-create",
         "--db",
@@ -1538,6 +1541,8 @@ describe("vault-collab CLI", () => {
         "--workspace-path",
         cwd,
         "--role",
+        "implementer",
+        "--role-profile-id",
         "implementer",
         "--initial-instructions",
         "Implement the broker foundation.",
@@ -1600,6 +1605,10 @@ describe("vault-collab CLI", () => {
         approver.sessionToken
       ])
     );
+
+    expect(request).toMatchObject({
+      roleProfileId: "implementer"
+    });
 
     expect(requesterActions.actions).toContainEqual(
       expect.objectContaining({
@@ -1781,16 +1790,26 @@ describe("vault-collab CLI", () => {
   });
 
   it("runs the agent, queue, and discussion workflow through flat JSON commands", async () => {
-    const roles = parseJson<Array<{ role: string }>>(await runCli(["roles", "--db", dbPath]));
-    expect(roles.map((role) => role.role)).toEqual([
+    const roles = parseJson<Array<{ role: string; roleProfileId: string }>>(
+      await runCli(["roles", "--db", dbPath])
+    );
+    expect(roles.map((role) => role.roleProfileId)).toEqual([
       "coordinator",
+      "explorer",
+      "planner",
+      "architect",
       "implementer",
       "reviewer",
-      "sweeper",
-      "observer"
+      "qa-evaluator",
+      "security-reviewer",
+      "documentation-agent",
+      "runtime-loop-operator",
+      "release-agent",
+      "pattern-mining-agent",
+      "loop-resolver"
     ]);
 
-    const reviewer = parseJson<{ agentUid: string; clientType: string }>(
+    const reviewer = parseJson<{ agentUid: string; clientType: string; roleProfileId: string }>(
       await runCli([
         "agent-upsert",
         "--db",
@@ -1801,6 +1820,8 @@ describe("vault-collab CLI", () => {
         "Claude Reviewer",
         "--role",
         "reviewer",
+        "--role-profile-id",
+        "reviewer",
         "--client-type",
         "claude-code",
         "--project",
@@ -1809,7 +1830,7 @@ describe("vault-collab CLI", () => {
         "review=true"
       ])
     );
-    const implementer = parseJson<{ agentUid: string; clientType: string }>(
+    const implementer = parseJson<{ agentUid: string; clientType: string; roleProfileId: string }>(
       await runCli([
         "agent-upsert",
         "--db",
@@ -1819,6 +1840,8 @@ describe("vault-collab CLI", () => {
         "--display-name",
         "OpenCode Implementer",
         "--role",
+        "implementer",
+        "--role-profile-id",
         "implementer",
         "--client-type",
         "opencode",
@@ -1875,12 +1898,15 @@ describe("vault-collab CLI", () => {
 
     expect(claude.agentUid).toBe(reviewer.agentUid);
     expect(opencode.agentUid).toBe(implementer.agentUid);
+    expect(reviewer.roleProfileId).toBe("reviewer");
+    expect(implementer.roleProfileId).toBe("implementer");
 
     const published = parseJson<{
       handoffUid: string;
       queueKey: string;
       labels: string[];
       queuePosition: number;
+      suggestedRoleProfileId: string | null;
     }>(
       await runCli([
         "publish",
@@ -1894,6 +1920,8 @@ describe("vault-collab CLI", () => {
         "Vault Collab",
         "--source-session-uid",
         claude.sessionUid,
+        "--suggested-role-profile-id",
+        "reviewer",
         "--queue-key",
         "phase-1",
         "--queue-position",
@@ -1908,7 +1936,8 @@ describe("vault-collab CLI", () => {
     expect(published).toMatchObject({
       queueKey: "phase-1",
       labels: ["cli", "discussion"],
-      queuePosition: 500
+      queuePosition: 500,
+      suggestedRoleProfileId: "reviewer"
     });
 
     const metadata = parseJson<{ labels: string[]; dependsOnHandoffUid: string }>(

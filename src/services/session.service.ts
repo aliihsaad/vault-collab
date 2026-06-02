@@ -4,6 +4,7 @@ import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type { LaunchRequestService } from "./launch-request.service.js";
+import { resolveRoleProfileIdFromDb } from "./role-profile-resolution.js";
 import type {
   ClientType,
   EventRecord,
@@ -28,6 +29,7 @@ interface SessionRow {
   project_key: string;
   workspace_path: string;
   role: string;
+  role_profile_id: string | null;
   status: SessionStatus;
   status_detail: string | null;
   capabilities_json: string;
@@ -86,6 +88,8 @@ export class SessionService {
     const deliveryWakeable = input.delivery?.wakeable === true ? 1 : 0;
     const capabilities = this.normalizeLaunchCapabilities(input.capabilities ?? {});
     const sessionProjectKey = projectKey(input.project);
+    const role = this.resolveSessionRole(input);
+    const roleProfileId = this.resolveSessionRoleProfileId(input, role);
 
     const register = this.db.transaction(() => {
       this.db
@@ -99,6 +103,7 @@ export class SessionService {
             project_key,
             workspace_path,
             role,
+            role_profile_id,
             status,
             status_detail,
             capabilities_json,
@@ -114,7 +119,7 @@ export class SessionService {
             updated_at,
             disconnected_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         )
         .run(
@@ -124,7 +129,8 @@ export class SessionService {
           input.project,
           sessionProjectKey,
           input.workspacePath,
-          this.resolveSessionRole(input),
+          role,
+          roleProfileId,
           "idle",
           null,
           JSON.stringify(capabilities),
@@ -799,6 +805,7 @@ export class SessionService {
       project: row.project,
       workspacePath: row.workspace_path,
       role: row.role,
+      roleProfileId: row.role_profile_id,
       status: row.status,
       statusDetail: row.status_detail,
       capabilities: JSON.parse(row.capabilities_json) as JsonRecord,
@@ -834,6 +841,7 @@ export class SessionService {
           sessions.project_key,
           sessions.workspace_path,
           sessions.role,
+          sessions.role_profile_id,
           sessions.status,
           sessions.status_detail,
           sessions.capabilities_json,
@@ -873,5 +881,26 @@ export class SessionService {
     }
 
     return "implementer";
+  }
+
+  private resolveSessionRoleProfileId(
+    input: RegisterSessionInput,
+    resolvedRole: string
+  ): string | null {
+    const explicitRoleProfileId = resolveRoleProfileIdFromDb(this.db, input.roleProfileId);
+    if (explicitRoleProfileId) {
+      return explicitRoleProfileId;
+    }
+
+    if (!input.role && input.agentUid) {
+      const profile = this.db
+        .prepare("SELECT role_profile_id FROM agent_profiles WHERE agent_uid = ?")
+        .get(input.agentUid) as { role_profile_id: string | null } | undefined;
+      if (profile?.role_profile_id) {
+        return resolveRoleProfileIdFromDb(this.db, profile.role_profile_id);
+      }
+    }
+
+    return resolveRoleProfileIdFromDb(this.db, resolvedRole);
   }
 }

@@ -85,10 +85,54 @@ describe("SessionService", () => {
     });
 
     expect(registered.role).toBe("reviewer");
+    expect(registered.roleProfileId).toBe("reviewer");
     expect(service.listSessions()[0]).toMatchObject({
       sessionUid: registered.sessionUid,
-      role: "reviewer"
+      role: "reviewer",
+      roleProfileId: "reviewer"
     });
+  });
+
+  it("persists canonical role profile ids at session registration time", () => {
+    const qaSession = service.registerSession({
+      displayName: "QA terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "qa",
+      capabilities: {}
+    });
+    const customSession = service.registerSession({
+      displayName: "Custom terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "bespoke-runtime-role",
+      capabilities: {}
+    });
+
+    expect(qaSession).toMatchObject({
+      role: "qa",
+      roleProfileId: "qa-evaluator"
+    });
+    expect(customSession).toMatchObject({
+      role: "bespoke-runtime-role",
+      roleProfileId: null
+    });
+    expect(service.listSessions({ project: "Vault Collab" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sessionUid: qaSession.sessionUid,
+          roleProfileId: "qa-evaluator"
+        }),
+        expect.objectContaining({
+          sessionUid: customSession.sessionUid,
+          roleProfileId: null
+        })
+      ])
+    );
+    expect(db.prepare("SELECT role, role_profile_id FROM sessions WHERE session_uid = ?").get(qaSession.sessionUid))
+      .toEqual({ role: "qa", role_profile_id: "qa-evaluator" });
   });
 
   it("defaults manually registered sessions to manual polling delivery", () => {

@@ -220,6 +220,44 @@ describe("HandoffService", () => {
     });
   });
 
+  it("stores advisory suggested role profile ids without enforcing lifecycle gates", () => {
+    const explicit = handoffs.publishHandoff({
+      shortPrompt: "Security review requested explicitly.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      suggestedRoleProfileId: "security-reviewer",
+      labels: ["security"]
+    });
+    const loopRouted = handoffs.publishHandoff({
+      shortPrompt: "Close completed-but-unclosed loops.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      labels: ["loop", "cleanup"]
+    });
+    const custom = handoffs.publishHandoff({
+      shortPrompt: "Unknown custom label should not gate.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      labels: ["custom-label"]
+    });
+
+    expect(explicit).toMatchObject({
+      suggestedRoleProfileId: "security-reviewer",
+      status: "available"
+    });
+    expect(loopRouted).toMatchObject({
+      suggestedRoleProfileId: "loop-resolver",
+      status: "available"
+    });
+    expect(custom).toMatchObject({
+      suggestedRoleProfileId: null,
+      status: "available"
+    });
+    expect(
+      db.prepare("SELECT suggested_role_profile_id FROM handoffs WHERE handoff_uid = ?").get(loopRouted.handoffUid)
+    ).toEqual({ suggested_role_profile_id: "loop-resolver" });
+  });
+
   it("filters and orders inbox handoffs by queue metadata", () => {
     const laterNormal = handoffs.publishHandoff({
       shortPrompt: "Later normal",
