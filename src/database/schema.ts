@@ -177,6 +177,7 @@ export function applySchema(db: Database.Database): void {
       source_session_uid TEXT,
       suggested_session_uid TEXT,
       suggested_client_type TEXT,
+      typed_payload TEXT,
       queue_key TEXT NOT NULL DEFAULT 'default',
       labels_json TEXT NOT NULL DEFAULT '[]',
       queue_position INTEGER,
@@ -200,6 +201,29 @@ export function applySchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_handoffs_source_project ON handoffs(source_project);
     CREATE INDEX IF NOT EXISTS idx_handoffs_status ON handoffs(status);
     CREATE INDEX IF NOT EXISTS idx_handoffs_claimed_by ON handoffs(claimed_by_session_uid);
+
+    CREATE TABLE IF NOT EXISTS handoff_templates (
+      template_uid TEXT PRIMARY KEY,
+      schema_version TEXT NOT NULL DEFAULT 'vault_collab.handoff_template.v1',
+      template_key TEXT NOT NULL,
+      role_profile_id TEXT,
+      name TEXT NOT NULL,
+      description TEXT,
+      handoff_type TEXT NOT NULL,
+      typed_payload_json TEXT NOT NULL,
+      labels_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      archived_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_handoff_templates_role
+      ON handoff_templates(role_profile_id);
+    CREATE INDEX IF NOT EXISTS idx_handoff_templates_template_key
+      ON handoff_templates(template_key);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_templates_unique_role_key
+      ON handoff_templates(COALESCE(role_profile_id, ''), template_key);
 
     CREATE TABLE IF NOT EXISTS events (
       event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -292,6 +316,7 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "handoffs", "queue_position", "INTEGER");
   addColumnIfMissing(db, "handoffs", "depends_on_handoff_uid", "TEXT");
   addColumnIfMissing(db, "handoffs", "suggested_role_profile_id", "TEXT");
+  addColumnIfMissing(db, "handoffs", "typed_payload", "TEXT");
   addColumnIfMissing(db, "handoffs", "lease_expires_at", "TEXT");
   addColumnIfMissing(db, "discussion_threads", "project_key", "TEXT");
 

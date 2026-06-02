@@ -40,6 +40,63 @@ function toolDescription(toolName: string): string {
   return definition?.description ?? "";
 }
 
+const discoveryTypedPayload = {
+  schema_version: "vault_collab.discovery_handoff.v1",
+  handoff_type: "qa",
+  objective: "Verify typed handoff payload support through MCP.",
+  scope: {
+    include: ["vault_collab_publish_handoff typed_payload"],
+    exclude: ["short_prompt removal"],
+    workspace: "Vault Collab",
+    write_policy: "workspace_write"
+  },
+  context_refs: {
+    vault_memory_uids: ["vm_7QnQrGsiJo3nu3sz"],
+    related_files: ["src/mcp/tools.ts"],
+    graph_nodes: [],
+    discussion_threads: []
+  },
+  evidence_contract: {
+    method: "MCP tool call test.",
+    required_sources: ["tests/mcp-tools.test.ts"],
+    confidence_required: "high",
+    separate_fact_inference: true
+  },
+  task_steps: [
+    {
+      id: "call_publish_handoff",
+      description: "Publish a handoff with typed_payload.",
+      required: true
+    }
+  ],
+  acceptance_criteria: ["typed payload round-trips through MCP"],
+  deliverables: {
+    vault_memory: {
+      memory_type: "handoff",
+      title: "QA handoff",
+      tags: ["qa"]
+    },
+    publish_followup_handoff: false
+  },
+  verification: {
+    required: ["MCP call returns typedPayload"],
+    not_required: []
+  },
+  risk_controls: {
+    permission_required_for: ["network install"],
+    secrets_policy: "never expose tokens"
+  },
+  completion: {
+    resolution_summary_required: true,
+    next_handoff_labels: ["qa-pass"]
+  },
+  suggested_executor: {
+    client_type: "codex",
+    role: "qa-evaluator",
+    capabilities: ["mcp", "testing"]
+  }
+};
+
 describe("Vault Collab MCP tools", () => {
   let dbPath: string;
   let cwd: string;
@@ -439,8 +496,55 @@ describe("Vault Collab MCP tools", () => {
       expect.arrayContaining(["roleProfileId", "role_profile_id"])
     );
     expect(schemaKeys("vault_collab_publish_handoff")).toEqual(
-      expect.arrayContaining(["suggestedRoleProfileId", "suggested_role_profile_id"])
+      expect.arrayContaining([
+        "suggestedRoleProfileId",
+        "suggested_role_profile_id",
+        "typedPayload",
+        "typed_payload"
+      ])
     );
+  });
+
+  it("publishes typed discovery handoff payloads through MCP and validates schema_version", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const published = structured<{
+      handoffUid: string;
+      shortPrompt: string;
+      typedPayload: typeof discoveryTypedPayload;
+    }>(
+      await tools.callTool("vault_collab_publish_handoff", {
+        shortPrompt: "Keep this short prompt visible in inbox.",
+        sourceProject: "Vault Collab",
+        targetProject: "Vault Collab",
+        typed_payload: discoveryTypedPayload
+      })
+    );
+
+    expect(published).toMatchObject({
+      shortPrompt: "Keep this short prompt visible in inbox.",
+      typedPayload: discoveryTypedPayload
+    });
+
+    const got = structured<{ typedPayload: typeof discoveryTypedPayload }>(
+      await tools.callTool("vault_collab_get_handoff", {
+        handoffUid: published.handoffUid
+      })
+    );
+    expect(got.typedPayload).toEqual(discoveryTypedPayload);
+
+    const rejected = await tools.callTool("vault_collab_publish_handoff", {
+      shortPrompt: "Reject invalid schema version.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      typedPayload: {
+        schema_version: "vault_collab.discovery_handoff.v2"
+      }
+    });
+
+    expect(rejected.isError).toBe(true);
+    expect(JSON.stringify(rejected)).toMatch(/unsupported typed payload schema_version/i);
   });
 
   it("returns the expanded 13-role catalog through MCP", async () => {

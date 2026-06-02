@@ -9,6 +9,63 @@ import type { RegisteredSession } from "../src/types.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 
+const discoveryTypedPayload = {
+  schema_version: "vault_collab.discovery_handoff.v1",
+  handoff_type: "implementation",
+  objective: "Implement typed discovery handoffs as an additive payload.",
+  scope: {
+    include: ["handoffs typed_payload column", "MCP publish_handoff input"],
+    exclude: ["removing short_prompt"],
+    workspace: "Vault Collab",
+    write_policy: "workspace_write"
+  },
+  context_refs: {
+    vault_memory_uids: ["vm_7QnQrGsiJo3nu3sz"],
+    related_files: ["src/types.ts", "src/database/schema.ts"],
+    graph_nodes: [],
+    discussion_threads: []
+  },
+  evidence_contract: {
+    method: "Read source files and run focused tests.",
+    required_sources: ["src/types.ts", "tests/handoff.service.test.ts"],
+    confidence_required: "high",
+    separate_fact_inference: true
+  },
+  task_steps: [
+    {
+      id: "add_schema",
+      description: "Add the nullable typed payload schema.",
+      required: true
+    }
+  ],
+  acceptance_criteria: ["short_prompt still works", "typed payload round-trips"],
+  deliverables: {
+    vault_memory: {
+      memory_type: "decision",
+      title: "Typed discovery handoff architecture decision",
+      tags: ["phase-2"]
+    },
+    publish_followup_handoff: true
+  },
+  verification: {
+    required: ["npm run test:run -- tests/handoff.service.test.ts"],
+    not_required: ["database push"]
+  },
+  risk_controls: {
+    permission_required_for: ["destructive work", "network install"],
+    secrets_policy: "never expose tokens"
+  },
+  completion: {
+    resolution_summary_required: true,
+    next_handoff_labels: ["qa", "phase-2"]
+  },
+  suggested_executor: {
+    client_type: "codex",
+    role: "architect",
+    capabilities: ["typescript", "sqlite", "tdd"]
+  }
+};
+
 describe("HandoffService", () => {
   let db: CollabDatabase;
   let now: Date;
@@ -90,6 +147,42 @@ describe("HandoffService", () => {
       status: "available"
     });
     expect(inbox[0]).not.toHaveProperty("claimToken");
+  });
+
+  it("stores typed discovery handoff payloads while keeping short prompts additive", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Implement the typed discovery handoff payload.",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab",
+      typedPayload: discoveryTypedPayload
+    });
+
+    const persisted = db
+      .prepare("SELECT short_prompt, typed_payload FROM handoffs WHERE handoff_uid = ?")
+      .get(handoff.handoffUid) as { short_prompt: string; typed_payload: string | null };
+
+    expect(handoff.shortPrompt).toBe("Implement the typed discovery handoff payload.");
+    expect(handoff.typedPayload).toEqual(discoveryTypedPayload);
+    expect(persisted.short_prompt).toBe("Implement the typed discovery handoff payload.");
+    expect(JSON.parse(persisted.typed_payload ?? "null")).toEqual(discoveryTypedPayload);
+    expect(handoffs.getHandoff(handoff.handoffUid)?.typedPayload).toEqual(discoveryTypedPayload);
+    expect(handoffs.listInbox({ targetProject: "Vault Collab" })[0]?.typedPayload).toEqual(
+      discoveryTypedPayload
+    );
+  });
+
+  it("rejects typed payloads with unsupported schema versions", () => {
+    expect(() =>
+      handoffs.publishHandoff({
+        shortPrompt: "Reject unsupported typed payload.",
+        sourceProject: "Vault Collab",
+        targetProject: "Vault Collab",
+        typedPayload: {
+          ...discoveryTypedPayload,
+          schema_version: "vault_collab.discovery_handoff.v2"
+        }
+      })
+    ).toThrow(/unsupported typed payload schema_version/i);
   });
 
   it("matches target and source projects by deterministic project key", () => {

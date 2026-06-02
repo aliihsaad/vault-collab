@@ -532,6 +532,110 @@ export const progressHandoffStatuses = [
 
 export type HandoffPriority = "low" | "normal" | "high" | "urgent";
 
+export const discoveryHandoffSchemaVersion = "vault_collab.discovery_handoff.v1" as const;
+
+export type DiscoveryHandoffSchemaVersion = typeof discoveryHandoffSchemaVersion;
+export type DiscoveryHandoffType =
+  | "discovery"
+  | "research"
+  | "implementation"
+  | "review"
+  | "qa"
+  | "architecture";
+export type DiscoveryHandoffWritePolicy = "read_only" | "workspace_write" | "approval_required";
+export type DiscoveryHandoffConfidence = "low" | "medium" | "high";
+
+export interface DiscoveryHandoffScope {
+  include: string[];
+  exclude: string[];
+  workspace: string;
+  write_policy: DiscoveryHandoffWritePolicy;
+}
+
+export interface DiscoveryHandoffContextRefs {
+  vault_memory_uids: string[];
+  related_files: string[];
+  graph_nodes: string[];
+  discussion_threads: string[];
+}
+
+export interface DiscoveryHandoffEvidenceContract {
+  method: string;
+  required_sources: string[];
+  confidence_required: DiscoveryHandoffConfidence;
+  separate_fact_inference: boolean;
+}
+
+export interface DiscoveryHandoffTaskStep {
+  id: string;
+  description: string;
+  required: boolean;
+}
+
+export interface DiscoveryHandoffDeliverables {
+  vault_memory: {
+    memory_type: "artifact" | "handoff" | "decision" | "session" | "plan" | "summary" | "reference";
+    title: string;
+    tags: string[];
+  };
+  publish_followup_handoff: boolean;
+}
+
+export interface DiscoveryHandoffVerification {
+  required: string[];
+  not_required: string[];
+}
+
+export interface DiscoveryHandoffRiskControls {
+  permission_required_for: string[];
+  secrets_policy: string;
+}
+
+export interface DiscoveryHandoffCompletion {
+  resolution_summary_required: boolean;
+  next_handoff_labels: string[];
+}
+
+export interface DiscoveryHandoffSuggestedExecutor {
+  client_type: ClientType;
+  role: string;
+  capabilities: string[];
+}
+
+export interface DiscoveryHandoffPayload {
+  schema_version: DiscoveryHandoffSchemaVersion;
+  handoff_type: DiscoveryHandoffType;
+  objective: string;
+  scope: DiscoveryHandoffScope;
+  context_refs: DiscoveryHandoffContextRefs;
+  evidence_contract: DiscoveryHandoffEvidenceContract;
+  task_steps: DiscoveryHandoffTaskStep[];
+  acceptance_criteria: string[];
+  deliverables: DiscoveryHandoffDeliverables;
+  verification: DiscoveryHandoffVerification;
+  risk_controls: DiscoveryHandoffRiskControls;
+  completion: DiscoveryHandoffCompletion;
+  suggested_executor: DiscoveryHandoffSuggestedExecutor;
+}
+
+export type HandoffTypedPayload = DiscoveryHandoffPayload | JsonRecord;
+
+export interface HandoffTemplateRecord {
+  templateUid: string;
+  schemaVersion: "vault_collab.handoff_template.v1";
+  templateKey: string;
+  roleProfileId: string | null;
+  name: string;
+  description: string | null;
+  handoffType: DiscoveryHandoffType;
+  typedPayload: HandoffTypedPayload;
+  labels: string[];
+  status: "active" | "archived";
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
 export interface PublishHandoffInput {
   shortPrompt: string;
   sourceProject: string;
@@ -554,6 +658,7 @@ export interface PublishHandoffInput {
   dependsOnHandoffUid?: string | null;
   priority?: HandoffPriority;
   urgent?: boolean;
+  typedPayload?: HandoffTypedPayload | null;
 }
 
 export interface PublishVaultLinkedHandoffInput extends PublishHandoffInput {
@@ -582,6 +687,7 @@ export interface HandoffRecord {
   labels: string[];
   queuePosition: number | null;
   dependsOnHandoffUid: string | null;
+  typedPayload: HandoffTypedPayload | null;
   status: HandoffStatus;
   priority: HandoffPriority;
   urgent: boolean;

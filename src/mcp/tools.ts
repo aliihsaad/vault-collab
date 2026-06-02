@@ -493,7 +493,9 @@ const publishHandoffInputSchema = z.object({
   dependsOnHandoffUid: optionalStringSchema("Optional preceding handoff dependency."),
   depends_on_handoff_uid: optionalStringSchema("Snake_case alias for dependsOnHandoffUid."),
   priority: handoffPrioritySchema.describe("Optional priority. Defaults to normal.").optional(),
-  urgent: optionalBooleanSchema("Optional urgent flag.")
+  urgent: optionalBooleanSchema("Optional urgent flag."),
+  typedPayload: z.record(z.unknown()).describe("Optional typed handoff payload.").optional(),
+  typed_payload: z.record(z.unknown()).describe("Snake_case alias for typedPayload.").optional()
 });
 
 const publishVaultLinkedHandoffInputSchema = publishHandoffInputSchema
@@ -1267,7 +1269,8 @@ export function createVaultCollabMcpTools(
         dependsOnHandoffUid:
           optionalString(args, "dependsOnHandoffUid", "depends_on_handoff_uid") ?? null,
         priority: optionalHandoffPriority(args, "priority") ?? "normal",
-        urgent: optionalBoolean(args, "urgent") ?? false
+        urgent: optionalBoolean(args, "urgent") ?? false,
+        typedPayload: optionalRecord(args, "typedPayload", "typed_payload") ?? null
       }),
     vault_collab_publish_handoff_with_vault_memory: (args) => {
       if (!linkedHandoffs) {
@@ -1288,8 +1291,14 @@ export function createVaultCollabMcpTools(
           optionalClientType(args, "suggestedClientType", "suggested_client_type") ?? null,
         suggestedRoleProfileId:
           optionalString(args, "suggestedRoleProfileId", "suggested_role_profile_id") ?? null,
+        queueKey: optionalString(args, "queueKey", "queue_key") ?? undefined,
+        labels: optionalStringArray(args, "labels") ?? undefined,
+        queuePosition: optionalNumber(args, "queuePosition", "queue_position") ?? undefined,
+        dependsOnHandoffUid:
+          optionalString(args, "dependsOnHandoffUid", "depends_on_handoff_uid") ?? null,
         priority: optionalHandoffPriority(args, "priority") ?? "normal",
         urgent: optionalBoolean(args, "urgent") ?? false,
+        typedPayload: optionalRecord(args, "typedPayload", "typed_payload") ?? null,
         vaultProject: optionalString(args, "vaultProject", "vault_project"),
         vaultTitle: optionalString(args, "vaultTitle", "vault_title"),
         vaultSubject: optionalString(args, "vaultSubject", "vault_subject"),

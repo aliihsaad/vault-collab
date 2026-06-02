@@ -44,9 +44,15 @@ export class VaultLinkedHandoffService {
       sourceSessionUid: input.sourceSessionUid,
       suggestedSessionUid: input.suggestedSessionUid,
       suggestedClientType: input.suggestedClientType,
+      suggestedRoleProfileId: input.suggestedRoleProfileId,
       vaultMemoryUid: saveResult.itemUid,
+      queueKey: input.queueKey,
+      labels: input.labels,
+      queuePosition: input.queuePosition,
+      dependsOnHandoffUid: input.dependsOnHandoffUid,
       priority: input.priority,
-      urgent: input.urgent
+      urgent: input.urgent,
+      typedPayload: input.typedPayload
     };
 
     const handoff = this.handoffs.publishHandoff(localInput);
@@ -73,6 +79,14 @@ export class VaultLinkedHandoffService {
         sourceSessionUid: input.sourceSessionUid ?? null,
         suggestedSessionUid: input.suggestedSessionUid ?? null,
         suggestedClientType: input.suggestedClientType ?? null,
+        suggestedRoleProfileId: input.suggestedRoleProfileId ?? null,
+        queueKey: input.queueKey ?? "default",
+        labels: input.labels ?? [],
+        dependsOnHandoffUid: input.dependsOnHandoffUid ?? null,
+        typedPayloadSchemaVersion:
+          input.typedPayload && typeof input.typedPayload.schema_version === "string"
+            ? input.typedPayload.schema_version
+            : null,
         priority: input.priority ?? "normal",
         urgent: input.urgent ?? input.priority === "urgent"
       }

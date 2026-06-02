@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
 import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
-import { progressHandoffStatuses } from "../types.js";
+import { discoveryHandoffSchemaVersion, progressHandoffStatuses } from "../types.js";
 import type { EventService } from "./event.service.js";
 import {
   firstSuggestedRoleProfileIdForLabels,
@@ -17,6 +17,7 @@ import type {
   HandoffActionSet,
   HandoffRecord,
   HandoffStatus,
+  HandoffTypedPayload,
   JsonRecord,
   PermissionRequestInput,
   PublishHandoffInput,
@@ -39,6 +40,7 @@ interface HandoffRow {
   suggested_session_uid: string | null;
   suggested_client_type: ClientType | null;
   suggested_role_profile_id: string | null;
+  typed_payload: string | null;
   queue_key: string;
   labels_json: string;
   queue_position: number | null;
@@ -115,6 +117,7 @@ export class HandoffService {
     const suggestedRoleProfileId =
       resolveRoleProfileIdFromDb(this.db, input.suggestedRoleProfileId) ??
       firstSuggestedRoleProfileIdForLabels(this.db, labels);
+    const typedPayload = normalizeTypedPayload(input.typedPayload ?? null);
 
     this.db
       .prepare(
@@ -133,6 +136,7 @@ export class HandoffService {
           suggested_session_uid,
           suggested_client_type,
           suggested_role_profile_id,
+          typed_payload,
           queue_key,
           labels_json,
           queue_position,
@@ -151,7 +155,7 @@ export class HandoffService {
           resolved_at,
           stale_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -168,6 +172,7 @@ export class HandoffService {
         input.suggestedSessionUid ?? null,
         input.suggestedClientType ?? null,
         suggestedRoleProfileId,
+        typedPayload ? JSON.stringify(typedPayload) : null,
         queueKey,
         JSON.stringify(labels),
         queuePosition,
@@ -195,7 +200,11 @@ export class HandoffService {
         sourceProject: input.sourceProject,
         targetProject: input.targetProject,
         priority,
-        urgent
+        urgent,
+        typedPayloadSchemaVersion:
+          typedPayload && typeof typedPayload.schema_version === "string"
+            ? typedPayload.schema_version
+            : null
       }
       });
 
@@ -1192,6 +1201,7 @@ export class HandoffService {
       labels: JSON.parse(row.labels_json) as string[],
       queuePosition: row.queue_position,
       dependsOnHandoffUid: row.depends_on_handoff_uid,
+      typedPayload: row.typed_payload ? (JSON.parse(row.typed_payload) as HandoffTypedPayload) : null,
       status: row.status,
       priority: row.priority,
       urgent: row.urgent === 1,
@@ -1237,4 +1247,25 @@ export class HandoffService {
 
     return maxPosition + 1000;
   }
+}
+
+function normalizeTypedPayload(payload: HandoffTypedPayload | null): HandoffTypedPayload | null {
+  if (payload === null) {
+    return null;
+  }
+
+  if (!isJsonRecord(payload)) {
+    throw new Error("Typed payload must be a JSON object");
+  }
+
+  const schemaVersion = payload.schema_version;
+  if (schemaVersion !== undefined && schemaVersion !== discoveryHandoffSchemaVersion) {
+    throw new Error(`Unsupported typed payload schema_version: ${String(schemaVersion)}`);
+  }
+
+  return payload;
+}
+
+function isJsonRecord(value: unknown): value is HandoffTypedPayload {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -336,7 +336,8 @@ describe("Vault Collab schema migrations", () => {
         "labels_json",
         "queue_position",
         "depends_on_handoff_uid",
-        "suggested_role_profile_id"
+        "suggested_role_profile_id",
+        "typed_payload"
       ])
     );
     expect(tables.map((table) => table.name)).toEqual(
@@ -349,12 +350,28 @@ describe("Vault Collab schema migrations", () => {
         "role_profiles",
         "role_provider_support",
         "role_label_routes",
-        "role_profile_aliases"
+        "role_profile_aliases",
+        "handoff_templates"
       ])
     );
+    expect(handoffColumns.find((column) => column.name === "typed_payload")).toMatchObject({
+      notnull: 0
+    });
     expect(columnNames(db, "agent_profiles")).toContain("role_profile_id");
     expect(columnNames(db, "launch_requests")).toContain("role_profile_id");
     expect(columnNames(db, "role_profiles")).toContain("skills_json");
+    expect(columnNames(db, "handoff_templates")).toEqual(
+      expect.arrayContaining([
+        "template_uid",
+        "schema_version",
+        "template_key",
+        "role_profile_id",
+        "name",
+        "handoff_type",
+        "typed_payload_json",
+        "labels_json"
+      ])
+    );
     expect(indexNames(db)).toEqual(
       expect.arrayContaining([
         "idx_attention_delivery_attempts_session",
@@ -362,7 +379,9 @@ describe("Vault Collab schema migrations", () => {
         "idx_role_profiles_status",
         "idx_role_provider_support_client",
         "idx_role_label_routes_label",
-        "idx_role_label_routes_unique_label_profile"
+        "idx_role_label_routes_unique_label_profile",
+        "idx_handoff_templates_role",
+        "idx_handoff_templates_template_key"
       ])
     );
   });
