@@ -4,6 +4,7 @@ import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import { discoveryHandoffSchemaVersion, progressHandoffStatuses } from "../types.js";
 import type { EventService } from "./event.service.js";
+import type { PolicyEngine } from "./policy-engine.service.js";
 import {
   firstSuggestedRoleProfileIdForLabels,
   resolveRoleProfileIdFromDb
@@ -122,7 +123,8 @@ export class HandoffService {
     private readonly db: CollabDatabase,
     private readonly events: EventService,
     private readonly clock: () => Date = () => new Date(),
-    private readonly gateGuard?: HandoffGateGuard
+    private readonly gateGuard?: HandoffGateGuard,
+    private readonly policyEngine?: PolicyEngine
   ) {}
 
   publishHandoff(input: PublishHandoffInput): HandoffRecord {
@@ -141,6 +143,18 @@ export class HandoffService {
       resolveRoleProfileIdFromDb(this.db, input.suggestedRoleProfileId) ??
       firstSuggestedRoleProfileIdForLabels(this.db, labels);
     const typedPayload = normalizeTypedPayload(input.typedPayload ?? null);
+    this.enforcePolicy("handoff.publish", {
+      sourceProject: input.sourceProject,
+      targetProject: input.targetProject,
+      sourceSessionUid: input.sourceSessionUid ?? null,
+      suggestedSessionUid: input.suggestedSessionUid ?? null,
+      vaultMemoryUid: input.vaultMemoryUid ?? null,
+      queueKey,
+      labels,
+      priority,
+      urgent,
+      typedPayload
+    });
 
     this.db
       .prepare(
@@ -631,6 +645,12 @@ export class HandoffService {
   }
 
   claimHandoff(handoffUid: string, sessionUid: string, sessionToken: string): HandoffRecord {
+    this.enforcePolicy("handoff.claim", {
+      handoffUid,
+      actorSessionUid: sessionUid,
+      requiresOwnerToken: true,
+      hasSessionToken: sessionToken.trim() !== ""
+    });
     this.assertSessionOwner(sessionUid, sessionToken);
     const now = this.now();
     const claimToken = randomBytes(32).toString("base64url");
@@ -873,6 +893,13 @@ export class HandoffService {
     sessionToken: string,
     summary: string
   ): HandoffRecord {
+    this.enforcePolicy("handoff.resolve", {
+      handoffUid,
+      actorSessionUid: sessionUid,
+      requiresOwnerToken: true,
+      hasSessionToken: sessionToken.trim() !== "",
+      summary
+    });
     this.assertClaimOwner(handoffUid, sessionUid, sessionToken);
     const now = this.now();
 
@@ -1216,6 +1243,13 @@ export class HandoffService {
       factsRequired: [],
       findingCodes: []
     };
+  }
+
+  private enforcePolicy(actionType: string, payload: JsonRecord): void {
+    this.policyEngine?.enforce({
+      actionType,
+      payload
+    });
   }
 
   private claimActionReason(row: HandoffRow, isClaimOwner: boolean): string {

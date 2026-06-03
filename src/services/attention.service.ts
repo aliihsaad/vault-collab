@@ -3,6 +3,7 @@ import type { DiscussionService } from "./discussion.service.js";
 import type { EventService } from "./event.service.js";
 import type { HandoffService } from "./handoff.service.js";
 import type { LaunchRequestService } from "./launch-request.service.js";
+import type { PolicyEngine } from "./policy-engine.service.js";
 import type { SessionService } from "./session.service.js";
 import { getEventTypeDefinition } from "../event-registry.js";
 import { projectKey } from "../project-key.js";
@@ -27,7 +28,8 @@ export class AttentionService {
     private readonly handoffs: HandoffService,
     private readonly discussions: DiscussionService,
     private readonly events: EventService,
-    private readonly launchRequests?: LaunchRequestService
+    private readonly launchRequests?: LaunchRequestService,
+    private readonly policyEngine?: PolicyEngine
   ) {
     void this.db;
     void this.discussions;
@@ -221,6 +223,10 @@ export class AttentionService {
         return null;
       }
 
+      if (!this.policyAllowsAttentionRoute(event, session, attention.itemKind)) {
+        return null;
+      }
+
       return this.eventItem(
         attention.itemKind,
         event,
@@ -229,6 +235,31 @@ export class AttentionService {
     }
 
     return null;
+  }
+
+  private policyAllowsAttentionRoute(
+    event: EventRecord,
+    session: SessionAttentionFeed["session"],
+    itemKind: SessionAttentionItem["kind"]
+  ): boolean {
+    if (!this.policyEngine) {
+      return true;
+    }
+
+    const decision = this.policyEngine.evaluate({
+      actionType: "attention.route",
+      dryRun: true,
+      payload: {
+        eventId: event.eventId,
+        eventType: event.eventType,
+        itemKind,
+        targetSessionUid: session.sessionUid,
+        targetRoleProfileId: session.roleProfileId,
+        project: typeof event.payload.project === "string" ? event.payload.project : session.project
+      }
+    });
+
+    return decision.allowed;
   }
 
   private eventItem(

@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { applySchema, seedRoleProfiles } from "./schema.js";
+import { applySchema, seedPolicyPacks, seedRoleProfiles } from "./schema.js";
 
 export type CollabDatabase = Database.Database;
 
@@ -8,5 +8,6 @@ export function createCollabDatabase(location = ":memory:"): CollabDatabase {
   db.pragma("foreign_keys = ON");
   applySchema(db);
   seedRoleProfiles(db);
+  seedPolicyPacks(db);
   return db;
 }

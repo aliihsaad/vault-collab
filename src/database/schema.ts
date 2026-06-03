@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { getLeaseTtlMs } from "../lease.js";
+import { builtInPolicyPacks } from "../policy-packs.js";
 import { projectKey } from "../project-key.js";
 import {
   builtInRoleLabelRoutes,
@@ -237,6 +238,35 @@ export function applySchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_events_handoff_uid ON events(handoff_uid);
     CREATE INDEX IF NOT EXISTS idx_events_session_uid ON events(session_uid);
 
+    CREATE TABLE IF NOT EXISTS policy_packs (
+      uid TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      version TEXT NOT NULL,
+      rules_json TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      is_builtin INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_policy_packs_name ON policy_packs(name);
+    CREATE INDEX IF NOT EXISTS idx_policy_packs_active ON policy_packs(active);
+
+    CREATE TABLE IF NOT EXISTS policy_events (
+      policy_event_uid TEXT PRIMARY KEY,
+      event_id INTEGER NOT NULL,
+      policy_pack_uid TEXT,
+      policy_rule_uid TEXT,
+      action_type TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (event_id) REFERENCES events(event_id),
+      FOREIGN KEY (policy_pack_uid) REFERENCES policy_packs(uid)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_policy_events_event_id ON policy_events(event_id);
+    CREATE INDEX IF NOT EXISTS idx_policy_events_pack_uid ON policy_events(policy_pack_uid);
+    CREATE INDEX IF NOT EXISTS idx_policy_events_action_type ON policy_events(action_type);
+
     CREATE TABLE IF NOT EXISTS session_attention_cursors (
       session_uid TEXT NOT NULL,
       stream TEXT NOT NULL DEFAULT 'default',
@@ -331,6 +361,7 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "handoffs", "typed_payload", "TEXT");
   addColumnIfMissing(db, "handoffs", "lease_expires_at", "TEXT");
   addColumnIfMissing(db, "discussion_threads", "project_key", "TEXT");
+  addColumnIfMissing(db, "policy_packs", "is_builtin", "INTEGER NOT NULL DEFAULT 0");
 
   backfillProjectRoutingKeys(db);
   backfillRoleProfileIds(db);
@@ -527,6 +558,47 @@ export function seedRoleProfiles(
         route.blocksCompletion === true ? 1 : 0,
         now,
         now
+      );
+    }
+  });
+
+  seed();
+}
+
+export function seedPolicyPacks(
+  db: Database.Database,
+  clock: () => Date = () => new Date()
+): void {
+  const now = clock().toISOString();
+  const insertPack = db.prepare(
+    `
+    INSERT INTO policy_packs (
+      uid,
+      name,
+      version,
+      rules_json,
+      active,
+      created_at,
+      is_builtin
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(uid) DO UPDATE SET
+      name = excluded.name,
+      version = excluded.version,
+      rules_json = excluded.rules_json,
+      is_builtin = excluded.is_builtin
+  `
+  );
+  const seed = db.transaction(() => {
+    for (const pack of builtInPolicyPacks) {
+      insertPack.run(
+        pack.uid,
+        pack.name,
+        pack.version,
+        JSON.stringify(pack.rules),
+        pack.active ? 1 : 0,
+        now,
+        pack.isBuiltin ? 1 : 0
       );
     }
   });

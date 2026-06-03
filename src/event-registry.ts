@@ -276,6 +276,34 @@ export const eventTypeRegistry: EventTypeDefinition[] = [
     severity: "low | medium | high | critical",
     finding: "string"
   }, roleAttention("policy_notice", ["coordinator", "security-reviewer"])),
+  define("policy.rule_triggered", "policy", "A policy rule matched an action or event payload.", {
+    actionType: "string",
+    eventType: "string | null",
+    decision: "PolicyDecisionKind",
+    policyPackUid: "policy_pack_*",
+    policyPackName: "string",
+    policyRuleUid: "string",
+    enforcement: "allow | deny | warn | require_approval | rate_limit",
+    reason: "string",
+    payloadKeys: "string[]"
+  }, noAttention),
+  define("policy.violation", "policy", "A policy rule denied, gated, or rate-limited an action.", {
+    actionType: "string",
+    eventType: "string | null",
+    decision: "deny | require_approval | rate_limited",
+    policyPackUid: "policy_pack_*",
+    policyPackName: "string",
+    policyRuleUid: "string",
+    enforcement: "deny | require_approval | rate_limit",
+    reason: "string",
+    payloadKeys: "string[]"
+  }, roleAttention("policy_notice", ["coordinator", "security-reviewer"])),
+  define("policy.approved", "policy", "A coordinator-approved policy-gated action was accepted.", {
+    actionType: "string",
+    eventType: "string | null",
+    decision: "approved",
+    approvedBySessionUid: "vc_sess_* | null"
+  }, noAttention),
 
   define("context.limit_warning", "context", "A session is approaching its context limit.", {
     project: "string",

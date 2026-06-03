@@ -11,9 +11,11 @@ import { EventService } from "../services/event.service.js";
 import { HandoffDetailService } from "../services/handoff-detail.service.js";
 import { HandoffService } from "../services/handoff.service.js";
 import { LaunchRequestService } from "../services/launch-request.service.js";
+import { PolicyEngine } from "../services/policy-engine.service.js";
 import { SecurityScanner } from "../services/security-scanner.service.js";
 import { AttentionReceiverService, type ReceiverAdapter } from "../services/attention-receiver.service.js";
 import { SessionService } from "../services/session.service.js";
+import { ToolService } from "../services/tool.service.js";
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../services/vault-link.service.js";
 import { launchRequestStatuses, progressHandoffStatuses } from "../types.js";
 import type {
@@ -75,6 +77,11 @@ export const vaultCollabToolNames = [
   "vault_collab_get_discussion_thread",
   "vault_collab_list_events",
   "vault_collab_list_event_types",
+  "vault_collab_list_policy_packs",
+  "vault_collab_get_policy_pack",
+  "vault_collab_activate_policy_pack",
+  "vault_collab_deactivate_policy_pack",
+  "vault_collab_evaluate_policy",
   "vault_collab_report_runtime_metrics",
   "vault_collab_detect_stalled_handoffs",
   "vault_collab_sweep_expired_handoffs",
@@ -614,6 +621,29 @@ const listEventTypesInputSchema = z.object({
   namespace: optionalStringSchema("Optional event namespace filter.")
 });
 
+const listPolicyPacksInputSchema = z.object({
+  includeInactive: optionalBooleanSchema("Include inactive policy packs."),
+  include_inactive: optionalBooleanSchema("Snake_case alias for includeInactive.")
+});
+
+const policyPackIdentifierInputSchema = z.object({
+  uid: optionalStringSchema("Required if name is omitted. Policy pack UID."),
+  name: optionalStringSchema("Required if uid is omitted. Policy pack name.")
+});
+
+const ownedPolicyPackInputSchema = ownedSessionInputSchema.extend({
+  uid: optionalStringSchema("Required if name is omitted. Policy pack UID."),
+  name: optionalStringSchema("Required if uid is omitted. Policy pack name.")
+});
+
+const evaluatePolicyInputSchema = z.object({
+  actionType: optionalStringSchema("Required if action_type is omitted. Action type to evaluate."),
+  action_type: optionalStringSchema("Snake_case alias for actionType."),
+  eventType: optionalStringSchema("Optional event type to evaluate."),
+  event_type: optionalStringSchema("Snake_case alias for eventType."),
+  payload: z.record(z.unknown()).describe("Token-safe hypothetical payload for dry-run evaluation.").optional()
+});
+
 const reportRuntimeMetricsInputSchema = ownedSessionInputSchema.extend({
   contextUsedTokens: optionalNumberSchema("Context tokens consumed by this session."),
   context_used_tokens: optionalNumberSchema("Snake_case alias for contextUsedTokens."),
@@ -959,6 +989,36 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: listEventTypesInputSchema
   },
   {
+    name: "vault_collab_list_policy_packs",
+    title: "List Policy Packs",
+    description: "List policy packs and activation state without exposing rule-editing affordances.",
+    inputSchema: listPolicyPacksInputSchema
+  },
+  {
+    name: "vault_collab_get_policy_pack",
+    title: "Get Policy Pack",
+    description: "Read a policy pack by UID or name, including declarative JSON rules.",
+    inputSchema: policyPackIdentifierInputSchema
+  },
+  {
+    name: "vault_collab_activate_policy_pack",
+    title: "Activate Policy Pack",
+    description: "Activate a policy pack when the caller is coordinator or policyAdmin.",
+    inputSchema: ownedPolicyPackInputSchema
+  },
+  {
+    name: "vault_collab_deactivate_policy_pack",
+    title: "Deactivate Policy Pack",
+    description: "Deactivate a policy pack when the caller is coordinator or policyAdmin.",
+    inputSchema: ownedPolicyPackInputSchema
+  },
+  {
+    name: "vault_collab_evaluate_policy",
+    title: "Evaluate Policy",
+    description: "Dry-run a policy evaluation against active packs without mutating counters or events.",
+    inputSchema: evaluatePolicyInputSchema
+  },
+  {
     name: "vault_collab_report_runtime_metrics",
     title: "Report Runtime Metrics",
     description:
@@ -1039,11 +1099,21 @@ export function createVaultCollabMcpTools(
   const agents = new AgentProfileService(db, events, options.clock);
   const launchRequests = new LaunchRequestService(db, events, options.clock);
   const sessions = new SessionService(db, events, launchRequests, options.clock);
+  const policyEngine = new PolicyEngine(db, events, options.clock);
+  const toolService = new ToolService(policyEngine);
   const securityScanner = new SecurityScanner(db, events, options.clock);
-  const handoffs = new HandoffService(db, events, options.clock, securityScanner);
+  const handoffs = new HandoffService(db, events, options.clock, securityScanner, policyEngine);
   const discussions = new DiscussionService(db, events, options.clock);
   const handoffDetails = new HandoffDetailService(handoffs, events, sessions, discussions);
-  const attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);
+  const attention = new AttentionService(
+    db,
+    sessions,
+    handoffs,
+    discussions,
+    events,
+    launchRequests,
+    policyEngine
+  );
   const attentionReceiver = new AttentionReceiverService(
     db,
     sessions,
@@ -1445,6 +1515,52 @@ export function createVaultCollabMcpTools(
         ? eventTypes.filter((eventType) => eventType.namespace === namespace)
         : eventTypes;
     },
+    vault_collab_list_policy_packs: (args) =>
+      policyEngine.listPolicyPacks({
+        includeInactive: optionalBoolean(args, "includeInactive", "include_inactive") ?? true
+      }).map((pack) => ({
+        uid: pack.uid,
+        name: pack.name,
+        version: pack.version,
+        active: pack.active,
+        isBuiltin: pack.isBuiltin,
+        createdAt: pack.createdAt,
+        ruleCount: pack.rules.length
+      })),
+    vault_collab_get_policy_pack: (args) =>
+      policyEngine.getPolicyPack({
+        uid: optionalString(args, "uid"),
+        name: optionalString(args, "name")
+      }),
+    vault_collab_activate_policy_pack: (args) =>
+      policyEngine.activatePolicyPack(
+        {
+          uid: optionalString(args, "uid"),
+          name: optionalString(args, "name")
+        },
+        {
+          sessionUid: requiredString(args, "sessionUid", "session_uid"),
+          sessionToken: requiredString(args, "sessionToken", "session_token")
+        }
+      ),
+    vault_collab_deactivate_policy_pack: (args) =>
+      policyEngine.deactivatePolicyPack(
+        {
+          uid: optionalString(args, "uid"),
+          name: optionalString(args, "name")
+        },
+        {
+          sessionUid: requiredString(args, "sessionUid", "session_uid"),
+          sessionToken: requiredString(args, "sessionToken", "session_token")
+        }
+      ),
+    vault_collab_evaluate_policy: (args) =>
+      policyEngine.evaluate({
+        actionType: requiredString(args, "actionType", "action_type"),
+        eventType: optionalString(args, "eventType", "event_type") ?? null,
+        payload: optionalRecord(args, "payload") ?? {},
+        dryRun: true
+      }),
     vault_collab_report_runtime_metrics: (args) =>
       sessions.reportRuntimeMetrics(
         requiredString(args, "sessionUid", "session_uid"),
@@ -1564,6 +1680,7 @@ export function createVaultCollabMcpTools(
       }
 
       try {
+        toolService.enforceBeforeExecution(name, args);
         const result = await handlers[name](args);
         recordToolCallEvent(events, "tool.call_after", name, args, {
           ok: true

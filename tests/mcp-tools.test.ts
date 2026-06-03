@@ -159,6 +159,11 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_get_discussion_thread",
       "vault_collab_list_events",
       "vault_collab_list_event_types",
+      "vault_collab_list_policy_packs",
+      "vault_collab_get_policy_pack",
+      "vault_collab_activate_policy_pack",
+      "vault_collab_deactivate_policy_pack",
+      "vault_collab_evaluate_policy",
       "vault_collab_report_runtime_metrics",
       "vault_collab_detect_stalled_handoffs",
       "vault_collab_sweep_expired_handoffs",
@@ -372,6 +377,106 @@ describe("Vault Collab MCP tools", () => {
     expect(JSON.stringify(beforeEvents)).not.toContain(secretToken);
     expect(JSON.stringify(afterEvents)).not.toContain(session.sessionToken);
     expect(JSON.stringify(failureEvents)).not.toContain(secretToken);
+  });
+
+  it("exposes policy pack administration and dry-run evaluation tools", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    expect(tools.definitions.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "vault_collab_list_policy_packs",
+        "vault_collab_get_policy_pack",
+        "vault_collab_activate_policy_pack",
+        "vault_collab_deactivate_policy_pack",
+        "vault_collab_evaluate_policy"
+      ])
+    );
+
+    const admin = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Policy Admin",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        capabilities: {
+          policyAdmin: true
+        }
+      })
+    );
+    const packs = structured<
+      Array<{ uid: string; name: string; active: boolean; isBuiltin: boolean; ruleCount: number }>
+    >(await tools.callTool("vault_collab_list_policy_packs", {}));
+
+    expect(packs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "core-safety",
+          active: true,
+          isBuiltin: true,
+          ruleCount: expect.any(Number)
+        })
+      ])
+    );
+
+    const coreSafety = structured<{ name: string; rules: Array<{ uid: string }> }>(
+      await tools.callTool("vault_collab_get_policy_pack", {
+        name: "core-safety"
+      })
+    );
+    expect(coreSafety.rules.map((rule) => rule.uid)).toContain(
+      "core-safety.block-token-exposure"
+    );
+
+    const denied = structured<{ allowed: boolean; decision: string }>(
+      await tools.callTool("vault_collab_evaluate_policy", {
+        actionType: "handoff.publish",
+        payload: {
+          sessionToken: "hypothetical-token"
+        }
+      })
+    );
+    expect(denied).toMatchObject({
+      allowed: false,
+      decision: "deny"
+    });
+
+    const deactivated = structured<{ name: string; active: boolean }>(
+      await tools.callTool("vault_collab_deactivate_policy_pack", {
+        name: "core-safety",
+        sessionUid: admin.sessionUid,
+        sessionToken: admin.sessionToken
+      })
+    );
+    expect(deactivated).toMatchObject({
+      name: "core-safety",
+      active: false
+    });
+
+    const allowed = structured<{ allowed: boolean; decision: string }>(
+      await tools.callTool("vault_collab_evaluate_policy", {
+        actionType: "handoff.publish",
+        payload: {
+          sessionToken: "hypothetical-token"
+        }
+      })
+    );
+    expect(allowed).toMatchObject({
+      allowed: true,
+      decision: "allow"
+    });
+
+    const activated = structured<{ name: string; active: boolean }>(
+      await tools.callTool("vault_collab_activate_policy_pack", {
+        name: "core-safety",
+        sessionUid: admin.sessionUid,
+        sessionToken: admin.sessionToken
+      })
+    );
+    expect(activated).toMatchObject({
+      name: "core-safety",
+      active: true
+    });
   });
 
   it("runs the launch-request broker lifecycle through MCP without spawning processes", async () => {

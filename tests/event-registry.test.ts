@@ -57,6 +57,28 @@ describe("event type registry", () => {
         roleProfileIds: ["coordinator", "security-reviewer"]
       }
     });
+    expect(getEventTypeDefinition("policy.rule_triggered")).toMatchObject({
+      canonicalName: "policy.rule_triggered",
+      namespace: "policy",
+      attention: {
+        itemKind: null
+      }
+    });
+    expect(getEventTypeDefinition("policy.violation")).toMatchObject({
+      canonicalName: "policy.violation",
+      namespace: "policy",
+      attention: {
+        itemKind: "policy_notice",
+        roleProfileIds: ["coordinator", "security-reviewer"]
+      }
+    });
+    expect(getEventTypeDefinition("policy.approved")).toMatchObject({
+      canonicalName: "policy.approved",
+      namespace: "policy",
+      attention: {
+        itemKind: null
+      }
+    });
     expect(getEventTypeDefinition("loop.stall_detected")).toMatchObject({
       attention: {
         itemKind: "loop_stall",
