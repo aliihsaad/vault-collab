@@ -4,6 +4,8 @@ import type { EventService } from "./event.service.js";
 import type { HandoffService } from "./handoff.service.js";
 import type { LaunchRequestService } from "./launch-request.service.js";
 import type { SessionService } from "./session.service.js";
+import { getEventTypeDefinition } from "../event-registry.js";
+import { projectKey } from "../project-key.js";
 import type {
   EventRecord,
   HandoffRecord,
@@ -42,10 +44,7 @@ export class AttentionService {
 
     const sinceEventId = options.sinceEventId ?? 0;
     const allEvents = this.events.listEvents();
-    const latestEventId = allEvents.reduce(
-      (latest, event) => Math.max(latest, event.eventId),
-      sinceEventId
-    );
+    const latestEventId = this.latestCursorEventId(allEvents, sinceEventId);
     const openHandoffs = this.handoffs
       .listInbox({
         includeResolved: false
@@ -88,6 +87,7 @@ export class AttentionService {
 
       const eventItem = this.mapEventToAttentionItem(
         event,
+        session,
         sessionUid,
         relevantHandoffUids,
         handoffsByUid,
@@ -145,6 +145,7 @@ export class AttentionService {
 
   private mapEventToAttentionItem(
     event: EventRecord,
+    session: SessionAttentionFeed["session"],
     sessionUid: string,
     relevantHandoffUids: Set<string>,
     handoffsByUid: Map<string, HandoffRecord>,
@@ -186,6 +187,44 @@ export class AttentionService {
         "discussion_message",
         event,
         handoffsByUid.get(event.handoffUid) ?? null
+      );
+    }
+
+    const registryItem = this.mapRegistryEventToAttentionItem(event, session, handoffsByUid);
+    if (registryItem) {
+      return registryItem;
+    }
+
+    return null;
+  }
+
+  private mapRegistryEventToAttentionItem(
+    event: EventRecord,
+    session: SessionAttentionFeed["session"],
+    handoffsByUid: Map<string, HandoffRecord>
+  ): SessionAttentionItem | null {
+    const definition = getEventTypeDefinition(event.eventType);
+    const attention = definition?.attention;
+    if (!attention || attention.itemKind === null) {
+      return null;
+    }
+
+    if (attention.scope === "project_role") {
+      if (
+        !session.roleProfileId ||
+        !attention.roleProfileIds.some((roleProfileId) => roleProfileId === session.roleProfileId)
+      ) {
+        return null;
+      }
+
+      if (!this.eventMatchesSessionProject(event, session, handoffsByUid)) {
+        return null;
+      }
+
+      return this.eventItem(
+        attention.itemKind,
+        event,
+        event.handoffUid ? handoffsByUid.get(event.handoffUid) ?? null : null
       );
     }
 
@@ -290,6 +329,11 @@ export class AttentionService {
     return [
       "session_permission",
       "handoff_permission",
+      "policy_notice",
+      "context_warning",
+      "cost_warning",
+      "loop_stall",
+      "tool_failure",
       "launch_request",
       "session_ping",
       "discussion_message",
@@ -306,7 +350,7 @@ export class AttentionService {
     options: ReceiveOptions = {}
   ): ReceiveResult {
     const session = this.sessions.getOwnedSession(sessionUid, sessionToken);
-    const fromEventId = session.delivery.lastAckEventId ?? 0;
+    const fromEventId = this.sessions.getAttentionCursor(sessionUid);
     const feed = this.getSessionAttention(sessionUid, {
       sinceEventId: fromEventId,
       includeCurrentHandoffs: options.includeCurrentHandoffs
@@ -368,6 +412,50 @@ export class AttentionService {
     }
 
     return feed.items;
+  }
+
+  private latestCursorEventId(events: EventRecord[], fallback: number): number {
+    return events.reduce((latest, event) => {
+      if (this.isAuditOnlyEvent(event)) {
+        return latest;
+      }
+
+      return Math.max(latest, event.eventId);
+    }, fallback);
+  }
+
+  private isAuditOnlyEvent(event: EventRecord): boolean {
+    const definition = getEventTypeDefinition(event.eventType);
+    if (definition?.attention?.itemKind) {
+      return false;
+    }
+
+    return event.eventType.startsWith("tool.call_");
+  }
+
+  private eventMatchesSessionProject(
+    event: EventRecord,
+    session: SessionAttentionFeed["session"],
+    handoffsByUid: Map<string, HandoffRecord>
+  ): boolean {
+    const eventProject = event.payload.project;
+    if (typeof eventProject === "string" && projectKey(eventProject) === projectKey(session.project)) {
+      return true;
+    }
+
+    if (event.handoffUid) {
+      const handoff = handoffsByUid.get(event.handoffUid);
+      if (!handoff) {
+        return false;
+      }
+
+      return (
+        projectKey(handoff.targetProject) === projectKey(session.project) ||
+        projectKey(handoff.sourceProject) === projectKey(session.project)
+      );
+    }
+
+    return false;
   }
 
   private sleep(ms: number): Promise<void> {

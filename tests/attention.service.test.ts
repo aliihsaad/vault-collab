@@ -387,12 +387,172 @@ describe("AttentionService", () => {
     expect(sessions.getSession(worker.sessionUid)?.delivery.lastAckEventId).toBe(
       ping.event.eventId
     );
+    expect(
+      db
+        .prepare(
+          "SELECT latest_event_id, stream FROM session_attention_cursors WHERE session_uid = ?"
+        )
+        .get(worker.sessionUid)
+    ).toEqual({
+      latest_event_id: ping.event.eventId,
+      stream: "default"
+    });
     expect(secondReceive).toMatchObject({
       fromEventId: ping.event.eventId,
       items: [],
       drained: true
     });
     expect(secondReceive.toEventId).toBeGreaterThanOrEqual(ping.event.eventId);
+  });
+
+  it("advances across routed tool failure events without redelivery", () => {
+    const runtime = sessions.registerSession({
+      displayName: "Runtime Loop Operator",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "runtime-loop-operator",
+      capabilities: {}
+    });
+    const cursor = attention.getSessionAttention(runtime.sessionUid).latestEventId;
+    sessions.acknowledgeAttention(runtime.sessionUid, runtime.sessionToken, cursor);
+    const failure = events.recordEvent({
+      eventType: "tool.call_failure",
+      sessionUid: worker.sessionUid,
+      payload: {
+        toolName: "vault_collab_unknown_tool",
+        project: "Vault Collab",
+        argumentKeys: [],
+        redactedArgumentKeys: [],
+        errorClass: "UnknownToolError"
+      }
+    });
+
+    const received = attention.receiveOnce(runtime.sessionUid, runtime.sessionToken, {
+      includeCurrentHandoffs: false
+    });
+    const eventBackedItems = received.items.filter((item) => item.event !== null);
+    const repeated = attention.receiveOnce(runtime.sessionUid, runtime.sessionToken, {
+      includeCurrentHandoffs: false
+    });
+
+    expect(received).toMatchObject({
+      fromEventId: cursor,
+      drained: true
+    });
+    expect(received.toEventId).toBeGreaterThanOrEqual(failure.eventId);
+    expect(eventBackedItems).toEqual([
+      expect.objectContaining({
+        kind: "tool_failure",
+        event: expect.objectContaining({
+          eventId: failure.eventId,
+          eventType: "tool.call_failure"
+        })
+      })
+    ]);
+    expect(
+      eventBackedItems.every((item) => item.event && item.event.eventId <= received.toEventId)
+    ).toBe(true);
+    expect(repeated.items).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "tool_failure",
+          event: expect.objectContaining({
+            eventId: failure.eventId
+          })
+        })
+      ])
+    );
+  });
+
+  it("routes context, cost, and loop warning events to runtime role profiles", () => {
+    const runtime = sessions.registerSession({
+      displayName: "Runtime Loop Operator",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "runtime-loop-operator",
+      capabilities: {}
+    });
+    const reviewer = sessions.registerSession({
+      displayName: "Reviewer",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "reviewer",
+      capabilities: {}
+    });
+    const cursor = attention.getSessionAttention(runtime.sessionUid).latestEventId;
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Warn on stalled work",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    handoffs.claimHandoff(handoff.handoffUid, worker.sessionUid, worker.sessionToken);
+
+    events.recordEvent({
+      eventType: "context.limit_warning",
+      sessionUid: worker.sessionUid,
+      payload: {
+        project: "Vault Collab",
+        usageRatio: 0.86,
+        thresholdRatio: 0.8,
+        remainingTokens: 12000
+      }
+    });
+    events.recordEvent({
+      eventType: "cost.threshold_warning",
+      sessionUid: worker.sessionUid,
+      payload: {
+        project: "Vault Collab",
+        costUsd: 18.25,
+        thresholdUsd: 15
+      }
+    });
+    events.recordEvent({
+      eventType: "loop.stall_detected",
+      handoffUid: handoff.handoffUid,
+      sessionUid: worker.sessionUid,
+      payload: {
+        project: "Vault Collab",
+        handoffUid: handoff.handoffUid,
+        claimedBySessionUid: worker.sessionUid,
+        status: "claimed",
+        lastProgressAt: handoff.updatedAt,
+        stalledForMs: 900000,
+        thresholdMs: 600000
+      }
+    });
+
+    const runtimeFeed = attention.getSessionAttention(runtime.sessionUid, {
+      sinceEventId: cursor,
+      includeCurrentHandoffs: false
+    });
+    const reviewerFeed = attention.getSessionAttention(reviewer.sessionUid, {
+      sinceEventId: cursor,
+      includeCurrentHandoffs: false
+    });
+
+    expect(runtimeFeed.items.map((item) => item.kind)).toEqual([
+      "context_warning",
+      "cost_warning",
+      "loop_stall"
+    ]);
+    expect(runtimeFeed.items.at(-1)).toMatchObject({
+      kind: "loop_stall",
+      handoff: {
+        handoffUid: handoff.handoffUid
+      },
+      event: {
+        payload: {
+          claimedBySessionUid: worker.sessionUid
+        }
+      }
+    });
+    expect(reviewerFeed.items.map((item) => item.kind)).not.toEqual(
+      expect.arrayContaining(["context_warning", "cost_warning", "loop_stall"])
+    );
+    expect(JSON.stringify(runtimeFeed)).not.toContain(worker.sessionToken);
   });
 
   it("can receive without advancing the cursor", () => {

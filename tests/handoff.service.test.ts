@@ -1030,6 +1030,61 @@ describe("HandoffService", () => {
       .toHaveLength(1);
   });
 
+  it("emits loop stall events for claimed handoffs with no recent progress note", () => {
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Detect stalled loop",
+      sourceProject: "Vault Collab",
+      targetProject: "Vault Collab"
+    });
+    now = new Date("2026-05-28T11:01:00.000Z");
+    handoffs.claimHandoff(handoff.handoffUid, claude.sessionUid, claude.sessionToken);
+    now = new Date("2026-05-28T11:16:00.000Z");
+
+    const firstDetection = handoffs.detectStalledHandoffs({
+      thresholdMs: 10 * 60_000
+    });
+    const secondDetection = handoffs.detectStalledHandoffs({
+      thresholdMs: 10 * 60_000
+    });
+    const stallEvent = events.listEvents({
+      handoffUid: handoff.handoffUid,
+      eventType: "loop.stall_detected"
+    })[0];
+
+    expect(firstDetection.map((event) => event.eventType)).toEqual(["loop.stall_detected"]);
+    expect(secondDetection).toEqual([]);
+    expect(stallEvent).toMatchObject({
+      eventType: "loop.stall_detected",
+      handoffUid: handoff.handoffUid,
+      sessionUid: claude.sessionUid,
+      payload: {
+        project: "Vault Collab",
+        handoffUid: handoff.handoffUid,
+        claimedBySessionUid: claude.sessionUid,
+        status: "claimed",
+        lastProgressAt: "2026-05-28T11:01:00.000Z",
+        stalledForMs: 15 * 60_000,
+        thresholdMs: 10 * 60_000
+      }
+    });
+    expect(JSON.stringify(stallEvent)).not.toContain(claude.sessionToken);
+
+    now = new Date("2026-05-28T11:17:00.000Z");
+    handoffs.updateHandoff(
+      handoff.handoffUid,
+      claude.sessionUid,
+      claude.sessionToken,
+      "in_progress",
+      "Progress resumed."
+    );
+
+    expect(
+      handoffs.detectStalledHandoffs({
+        thresholdMs: 10 * 60_000
+      })
+    ).toEqual([]);
+  });
+
   it("resolves a claimed handoff without deleting its history", () => {
     const handoff = handoffs.publishHandoff({
       shortPrompt: "Resolve me",

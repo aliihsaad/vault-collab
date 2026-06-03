@@ -1,4 +1,5 @@
 import type { CollabDatabase } from "../database/connection.js";
+import { assertTokenSafePayload, eventTypeRegistry } from "../event-registry.js";
 import type { EventRecord, JsonRecord } from "../types.js";
 
 interface EventRow {
@@ -31,6 +32,8 @@ export class EventService {
 
   recordEvent(input: RecordEventInput): EventRecord {
     const createdAt = this.clock().toISOString();
+    const payload = input.payload ?? {};
+    assertTokenSafePayload(payload);
     const result = this.db
       .prepare(
         `
@@ -42,7 +45,7 @@ export class EventService {
         input.handoffUid ?? null,
         input.sessionUid ?? null,
         input.eventType,
-        JSON.stringify(input.payload ?? {}),
+        JSON.stringify(payload),
         createdAt
       );
 
@@ -51,9 +54,13 @@ export class EventService {
       handoffUid: input.handoffUid ?? null,
       sessionUid: input.sessionUid ?? null,
       eventType: input.eventType,
-      payload: input.payload ?? {},
+      payload,
       createdAt
     };
+  }
+
+  listEventTypes(): typeof eventTypeRegistry {
+    return eventTypeRegistry;
   }
 
   listEvents(filter: ListEventsFilter = {}): EventRecord[] {

@@ -158,6 +158,9 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_list_discussion_threads",
       "vault_collab_get_discussion_thread",
       "vault_collab_list_events",
+      "vault_collab_list_event_types",
+      "vault_collab_report_runtime_metrics",
+      "vault_collab_detect_stalled_handoffs",
       "vault_collab_sweep_expired_handoffs",
       "vault_collab_claim_handoff",
       "vault_collab_update_handoff",
@@ -246,6 +249,128 @@ describe("Vault Collab MCP tools", () => {
     expect(safetyText).toMatch(/manual coordinator/i);
     expect(safetyText).toMatch(/worker wakeable/i);
     expect(JSON.stringify(guide)).not.toContain("sessionToken");
+  });
+
+  it("lists the stable event type registry through MCP", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const definitions = structured<
+      Array<{
+        canonicalName: string;
+        namespace: string;
+        payloadShape: Record<string, unknown>;
+        tokenSafety: { forbiddenPayloadKeys: string[] };
+        attention: { roleProfileIds: string[]; itemKind: string | null };
+      }>
+    >(await tools.callTool("vault_collab_list_event_types", {}));
+
+    expect(definitions.map((definition) => definition.canonicalName)).toEqual(
+      expect.arrayContaining([
+        "tool.call_before",
+        "tool.call_after",
+        "tool.call_failure",
+        "context.limit_warning",
+        "cost.threshold_warning",
+        "loop.stall_detected"
+      ])
+    );
+    expect(definitions.find((definition) => definition.canonicalName === "loop.stall_detected"))
+      .toMatchObject({
+        namespace: "loop",
+        attention: {
+          itemKind: "loop_stall",
+          roleProfileIds: ["coordinator", "runtime-loop-operator"]
+        }
+      });
+    expect(
+      definitions.every((definition) =>
+        definition.tokenSafety.forbiddenPayloadKeys.includes("sessionToken")
+      )
+    ).toBe(true);
+  });
+
+  it("publishes token-safe before after and failure events for MCP tool calls", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const session = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Audited MCP caller",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd
+      })
+    );
+    const secretToken = "owner-token-that-must-not-leak";
+    const failed = await tools.callTool("vault_collab_heartbeat_session", {
+      sessionUid: session.sessionUid,
+      sessionToken: secretToken
+    });
+
+    expect(failed.isError).toBe(true);
+
+    const beforeEvents = structured<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await tools.callTool("vault_collab_list_events", {
+        eventType: "tool.call_before"
+      })
+    );
+    const afterEvents = structured<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await tools.callTool("vault_collab_list_events", {
+        eventType: "tool.call_after"
+      })
+    );
+    const failureEvents = structured<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await tools.callTool("vault_collab_list_events", {
+        eventType: "tool.call_failure"
+      })
+    );
+
+    expect(beforeEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "tool.call_before",
+          payload: expect.objectContaining({
+            toolName: "vault_collab_register_session",
+            project: "Vault Collab",
+            redactedArgumentKeys: []
+          })
+        }),
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            toolName: "vault_collab_heartbeat_session",
+            actorSessionUid: session.sessionUid,
+            redactedArgumentKeys: ["sessionToken"]
+          })
+        })
+      ])
+    );
+    expect(afterEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: "tool.call_after",
+          payload: expect.objectContaining({
+            toolName: "vault_collab_register_session",
+            ok: true
+          })
+        })
+      ])
+    );
+    expect(failureEvents).toEqual([
+      expect.objectContaining({
+        eventType: "tool.call_failure",
+        payload: expect.objectContaining({
+          toolName: "vault_collab_heartbeat_session",
+          actorSessionUid: session.sessionUid,
+          ok: false,
+          errorClass: "Error"
+        })
+      })
+    ]);
+    expect(JSON.stringify(beforeEvents)).not.toContain(session.sessionToken);
+    expect(JSON.stringify(beforeEvents)).not.toContain(secretToken);
+    expect(JSON.stringify(afterEvents)).not.toContain(session.sessionToken);
+    expect(JSON.stringify(failureEvents)).not.toContain(secretToken);
   });
 
   it("runs the launch-request broker lifecycle through MCP without spawning processes", async () => {
@@ -915,6 +1040,81 @@ describe("Vault Collab MCP tools", () => {
     ]);
     expect(secondReceive.items).toEqual([]);
     expect(JSON.stringify(received)).not.toContain(worker.sessionToken);
+  });
+
+  it("reports runtime metrics and emits context and cost warnings into attention", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const worker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Metrics Worker",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        role: "implementer"
+      })
+    );
+    const runtime = structured<{ sessionUid: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Runtime Operator",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        role: "runtime-loop-operator"
+      })
+    );
+    const cursor = structured<{ latestEventId: number }>(
+      await tools.callTool("vault_collab_get_session_attention", {
+        sessionUid: runtime.sessionUid,
+        includeCurrentHandoffs: false
+      })
+    ).latestEventId;
+
+    const report = structured<{
+      emittedEvents: Array<{ eventType: string; payload: Record<string, unknown> }>;
+    }>(
+      await tools.callTool("vault_collab_report_runtime_metrics", {
+        sessionUid: worker.sessionUid,
+        sessionToken: worker.sessionToken,
+        contextUsedTokens: 86000,
+        contextLimitTokens: 100000,
+        contextThresholdRatio: 0.8,
+        costUsd: 18.25,
+        costThresholdUsd: 15
+      })
+    );
+    const attention = structured<{
+      items: Array<{ kind: string; event: { eventType: string; payload: Record<string, unknown> } }>;
+    }>(
+      await tools.callTool("vault_collab_get_session_attention", {
+        sessionUid: runtime.sessionUid,
+        sinceEventId: cursor,
+        includeCurrentHandoffs: false
+      })
+    );
+
+    expect(report.emittedEvents.map((event) => event.eventType)).toEqual([
+      "context.limit_warning",
+      "cost.threshold_warning"
+    ]);
+    expect(attention.items.map((item) => item.kind)).toEqual([
+      "context_warning",
+      "cost_warning"
+    ]);
+    expect(attention.items[0].event.payload).toMatchObject({
+      project: "Vault Collab",
+      usageRatio: 0.86,
+      thresholdRatio: 0.8,
+      remainingTokens: 14000
+    });
+    expect(attention.items[1].event.payload).toMatchObject({
+      project: "Vault Collab",
+      costUsd: 18.25,
+      thresholdUsd: 15
+    });
+    expect(JSON.stringify(report)).not.toContain(worker.sessionToken);
+    expect(JSON.stringify(attention)).not.toContain(worker.sessionToken);
   });
 
   it("renames and closes roster sessions through MCP without leaking tokens", async () => {

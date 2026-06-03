@@ -237,6 +237,18 @@ export function applySchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_events_handoff_uid ON events(handoff_uid);
     CREATE INDEX IF NOT EXISTS idx_events_session_uid ON events(session_uid);
 
+    CREATE TABLE IF NOT EXISTS session_attention_cursors (
+      session_uid TEXT NOT NULL,
+      stream TEXT NOT NULL DEFAULT 'default',
+      latest_event_id INTEGER NOT NULL DEFAULT 0,
+      acknowledged_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (session_uid, stream)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_session_attention_cursors_session
+      ON session_attention_cursors(session_uid);
+
     CREATE TABLE IF NOT EXISTS attention_delivery_attempts (
       attempt_uid TEXT PRIMARY KEY,
       session_uid TEXT NOT NULL,

@@ -308,6 +308,14 @@ export interface PermissionRequestInput {
   source?: string | null;
 }
 
+export interface RuntimeMetricsInput {
+  contextUsedTokens?: number | null;
+  contextLimitTokens?: number | null;
+  contextThresholdRatio?: number | null;
+  costUsd?: number | null;
+  costThresholdUsd?: number | null;
+}
+
 export interface EventRecord {
   eventId: number;
   handoffUid: string | null;
@@ -323,6 +331,11 @@ export type AttentionItemKind =
   | "handoff_permission"
   | "launch_request"
   | "discussion_message"
+  | "tool_failure"
+  | "policy_notice"
+  | "context_warning"
+  | "cost_warning"
+  | "loop_stall"
   | "suggested_handoff"
   | "claimed_handoff"
   | "claimed_by_other_handoff"

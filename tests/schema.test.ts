@@ -344,6 +344,7 @@ describe("Vault Collab schema migrations", () => {
       expect.arrayContaining([
         "agent_profiles",
         "launch_requests",
+        "session_attention_cursors",
         "attention_delivery_attempts",
         "discussion_threads",
         "discussion_messages",
@@ -360,6 +361,13 @@ describe("Vault Collab schema migrations", () => {
     expect(columnNames(db, "agent_profiles")).toContain("role_profile_id");
     expect(columnNames(db, "launch_requests")).toContain("role_profile_id");
     expect(columnNames(db, "role_profiles")).toContain("skills_json");
+    expect(columnNames(db, "session_attention_cursors")).toEqual([
+      "session_uid",
+      "stream",
+      "latest_event_id",
+      "acknowledged_at",
+      "updated_at"
+    ]);
     expect(columnNames(db, "handoff_templates")).toEqual(
       expect.arrayContaining([
         "template_uid",
@@ -374,6 +382,7 @@ describe("Vault Collab schema migrations", () => {
     );
     expect(indexNames(db)).toEqual(
       expect.arrayContaining([
+        "idx_session_attention_cursors_session",
         "idx_attention_delivery_attempts_session",
         "idx_attention_delivery_attempts_status",
         "idx_role_profiles_status",

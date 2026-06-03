@@ -10,6 +10,7 @@ import {
 } from "./role-profile-resolution.js";
 import type {
   ClientType,
+  EventRecord,
   HandoffFilters,
   HandoffPriority,
   HandoffActionAffordance,
@@ -64,6 +65,10 @@ interface SessionOwnerRow {
   session_uid: string;
   session_token: string;
   capabilities_json: string;
+}
+
+interface DetectStalledHandoffsOptions {
+  thresholdMs: number;
 }
 
 const closedInboxStatuses: HandoffStatus[] = ["resolved", "abandoned", "stale"];
@@ -467,6 +472,54 @@ export class HandoffService {
     });
 
     return sweep();
+  }
+
+  detectStalledHandoffs(options: DetectStalledHandoffsOptions): EventRecord[] {
+    if (!Number.isFinite(options.thresholdMs) || options.thresholdMs <= 0) {
+      throw new Error("thresholdMs must be greater than 0");
+    }
+
+    const now = this.clock();
+    const stalledBefore = new Date(now.getTime() - options.thresholdMs).toISOString();
+    const rows = this.db
+      .prepare(
+        `
+        SELECT *
+        FROM handoffs
+        WHERE claimed_by_session_uid IS NOT NULL
+          AND status IN (${leasedHandoffStatuses.map(() => "?").join(", ")})
+          AND updated_at <= ?
+        ORDER BY updated_at ASC, handoff_uid ASC
+      `
+      )
+      .all(...leasedHandoffStatuses, stalledBefore) as HandoffRow[];
+
+    const emittedEvents: EventRecord[] = [];
+    for (const row of rows) {
+      const lastProgressAt = row.updated_at;
+      if (this.hasStallEventForProgress(row.handoff_uid, lastProgressAt)) {
+        continue;
+      }
+
+      emittedEvents.push(
+        this.events.recordEvent({
+          eventType: "loop.stall_detected",
+          handoffUid: row.handoff_uid,
+          sessionUid: row.claimed_by_session_uid,
+          payload: {
+            project: row.target_project,
+            handoffUid: row.handoff_uid,
+            claimedBySessionUid: row.claimed_by_session_uid,
+            status: row.status,
+            lastProgressAt,
+            stalledForMs: now.getTime() - new Date(lastProgressAt).getTime(),
+            thresholdMs: options.thresholdMs
+          }
+        })
+      );
+    }
+
+    return emittedEvents;
   }
 
   updateHandoffMetadata(
@@ -1246,6 +1299,15 @@ export class HandoffService {
     }, 0);
 
     return maxPosition + 1000;
+  }
+
+  private hasStallEventForProgress(handoffUid: string, lastProgressAt: string): boolean {
+    return this.events
+      .listEvents({
+        handoffUid,
+        eventType: "loop.stall_detected"
+      })
+      .some((event) => event.payload.lastProgressAt === lastProgressAt);
   }
 }
 

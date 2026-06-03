@@ -552,6 +552,35 @@ describe("SessionService", () => {
     ).toThrow(/invalid session token/i);
   });
 
+  it("emits cost warnings without requiring context metrics", () => {
+    const registered = service.registerSession({
+      displayName: "Cost reporter",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    now = new Date("2026-05-28T10:01:50.000Z");
+
+    const report = service.reportRuntimeMetrics(registered.sessionUid, registered.sessionToken, {
+      costUsd: 21,
+      costThresholdUsd: 20
+    });
+
+    expect(report.emittedEvents.map((event) => event.eventType)).toEqual([
+      "cost.threshold_warning"
+    ]);
+    expect(report.emittedEvents[0]).toMatchObject({
+      sessionUid: registered.sessionUid,
+      payload: {
+        project: "Vault Collab",
+        costUsd: 21,
+        thresholdUsd: 20
+      }
+    });
+    expect(JSON.stringify(report)).not.toContain(registered.sessionToken);
+  });
+
   it("disconnects sessions without deleting them", () => {
     const registered = service.registerSession({
       displayName: "Octogent",

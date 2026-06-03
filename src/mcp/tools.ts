@@ -2,6 +2,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { getAgentOperatingGuide } from "../agent-guide.js";
 import { createCollabDatabase, type CollabDatabase } from "../database/connection.js";
+import { isForbiddenTokenKey } from "../event-registry.js";
 import { withAttentionNextAction } from "../next-actions.js";
 import { AgentProfileService } from "../services/agent-profile.service.js";
 import { AttentionService } from "../services/attention.service.js";
@@ -72,6 +73,9 @@ export const vaultCollabToolNames = [
   "vault_collab_list_discussion_threads",
   "vault_collab_get_discussion_thread",
   "vault_collab_list_events",
+  "vault_collab_list_event_types",
+  "vault_collab_report_runtime_metrics",
+  "vault_collab_detect_stalled_handoffs",
   "vault_collab_sweep_expired_handoffs",
   "vault_collab_claim_handoff",
   "vault_collab_update_handoff",
@@ -605,6 +609,28 @@ const listEventsInputSchema = z.object({
   event_type: optionalStringSchema("Snake_case alias for eventType.")
 });
 
+const listEventTypesInputSchema = z.object({
+  namespace: optionalStringSchema("Optional event namespace filter.")
+});
+
+const reportRuntimeMetricsInputSchema = ownedSessionInputSchema.extend({
+  contextUsedTokens: optionalNumberSchema("Context tokens consumed by this session."),
+  context_used_tokens: optionalNumberSchema("Snake_case alias for contextUsedTokens."),
+  contextLimitTokens: optionalNumberSchema("Context window limit for this session."),
+  context_limit_tokens: optionalNumberSchema("Snake_case alias for contextLimitTokens."),
+  contextThresholdRatio: optionalNumberSchema("Warn when used / limit reaches this ratio."),
+  context_threshold_ratio: optionalNumberSchema("Snake_case alias for contextThresholdRatio."),
+  costUsd: optionalNumberSchema("Current estimated cost in USD."),
+  cost_usd: optionalNumberSchema("Snake_case alias for costUsd."),
+  costThresholdUsd: optionalNumberSchema("Warn when current estimated cost reaches this USD threshold."),
+  cost_threshold_usd: optionalNumberSchema("Snake_case alias for costThresholdUsd.")
+});
+
+const detectStalledHandoffsInputSchema = z.object({
+  thresholdMs: optionalNumberSchema("Progress inactivity threshold in milliseconds."),
+  threshold_ms: optionalNumberSchema("Snake_case alias for thresholdMs.")
+});
+
 const sweepExpiredHandoffsInputSchema = z.object({});
 
 const updateHandoffInputSchema = ownedHandoffInputSchema.extend({
@@ -923,6 +949,27 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     title: "List Events",
     description: "List inspectable session and handoff event history without mutating state.",
     inputSchema: listEventsInputSchema
+  },
+  {
+    name: "vault_collab_list_event_types",
+    title: "List Event Types",
+    description:
+      "List the stable Vault Collab event type registry with payload shape, token-safety, and attention audience metadata.",
+    inputSchema: listEventTypesInputSchema
+  },
+  {
+    name: "vault_collab_report_runtime_metrics",
+    title: "Report Runtime Metrics",
+    description:
+      "Report token-safe context and cost metrics for a session and emit warning events when configured thresholds are reached.",
+    inputSchema: reportRuntimeMetricsInputSchema
+  },
+  {
+    name: "vault_collab_detect_stalled_handoffs",
+    title: "Detect Stalled Handoffs",
+    description:
+      "Emit loop.stall_detected events for claimed handoffs with no progress update for the configured threshold.",
+    inputSchema: detectStalledHandoffsInputSchema
   },
   {
     name: "vault_collab_sweep_expired_handoffs",
@@ -1389,6 +1436,38 @@ export function createVaultCollabMcpTools(
         sessionUid: optionalString(args, "sessionUid", "session_uid"),
         eventType: optionalString(args, "eventType", "event_type")
       }),
+    vault_collab_list_event_types: (args) => {
+      const namespace = optionalString(args, "namespace");
+      const eventTypes = events.listEventTypes();
+      return namespace
+        ? eventTypes.filter((eventType) => eventType.namespace === namespace)
+        : eventTypes;
+    },
+    vault_collab_report_runtime_metrics: (args) =>
+      sessions.reportRuntimeMetrics(
+        requiredString(args, "sessionUid", "session_uid"),
+        requiredString(args, "sessionToken", "session_token"),
+        {
+          contextUsedTokens:
+            optionalNumber(args, "contextUsedTokens", "context_used_tokens") ?? null,
+          contextLimitTokens:
+            optionalNumber(args, "contextLimitTokens", "context_limit_tokens") ?? null,
+          contextThresholdRatio:
+            optionalNumber(args, "contextThresholdRatio", "context_threshold_ratio") ?? null,
+          costUsd: optionalNumber(args, "costUsd", "cost_usd") ?? null,
+          costThresholdUsd:
+            optionalNumber(args, "costThresholdUsd", "cost_threshold_usd") ?? null
+        }
+      ),
+    vault_collab_detect_stalled_handoffs: (args) => {
+      const emittedEvents = handoffs.detectStalledHandoffs({
+        thresholdMs: optionalNumber(args, "thresholdMs", "threshold_ms") ?? 10 * 60_000
+      });
+      return {
+        emittedEvents,
+        count: emittedEvents.length
+      };
+    },
     vault_collab_sweep_expired_handoffs: () => {
       const released = handoffs.sweepExpiredLeases();
       return {
@@ -1466,16 +1545,33 @@ export function createVaultCollabMcpTools(
   return {
     definitions: availableDefinitions,
     callTool: async (name, args) => {
+      recordToolCallEvent(events, "tool.call_before", name, args);
       if (!isVaultCollabToolName(name)) {
+        recordToolCallEvent(events, "tool.call_failure", name, args, {
+          ok: false,
+          errorClass: "UnknownTool"
+        });
         return errorResult(`Unknown Vault Collab tool: ${name}`);
       }
       if (!availableToolNames.has(name)) {
+        recordToolCallEvent(events, "tool.call_failure", name, args, {
+          ok: false,
+          errorClass: "UnavailableTool"
+        });
         return errorResult(vaultLinkedPublishUnavailableMessage());
       }
 
       try {
-        return successResult(await handlers[name](args));
+        const result = await handlers[name](args);
+        recordToolCallEvent(events, "tool.call_after", name, args, {
+          ok: true
+        });
+        return successResult(result);
       } catch (error) {
+        recordToolCallEvent(events, "tool.call_failure", name, args, {
+          ok: false,
+          errorClass: error instanceof Error ? error.name : typeof error
+        });
         return errorResult(error instanceof Error ? error.message : String(error));
       }
     },
@@ -1486,6 +1582,56 @@ export function createVaultCollabMcpTools(
       }
     }
   };
+}
+
+function recordToolCallEvent(
+  events: EventService,
+  eventType: "tool.call_before" | "tool.call_after" | "tool.call_failure",
+  toolName: string,
+  args: Record<string, unknown>,
+  extra: JsonRecord = {}
+): void {
+  events.recordEvent({
+    eventType,
+    payload: {
+      toolName,
+      ...toolAuditPayload(args),
+      ...extra
+    }
+  });
+}
+
+function toolAuditPayload(args: Record<string, unknown>): JsonRecord {
+  const argumentKeys: string[] = [];
+  const redactedArgumentKeys: string[] = [];
+
+  for (const key of Object.keys(args)) {
+    if (isForbiddenTokenKey(key)) {
+      redactedArgumentKeys.push(key);
+    } else {
+      argumentKeys.push(key);
+    }
+  }
+
+  return {
+    actorSessionUid: firstStringArg(args, "sessionUid", "session_uid", "actorSessionUid", "actor_session_uid") ?? null,
+    project:
+      firstStringArg(args, "project", "targetProject", "target_project", "sourceProject", "source_project") ??
+      null,
+    argumentKeys,
+    redactedArgumentKeys
+  };
+}
+
+function firstStringArg(args: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value;
+    }
+  }
+
+  return null;
 }
 
 function isVaultCollabToolName(name: string): name is VaultCollabToolName {

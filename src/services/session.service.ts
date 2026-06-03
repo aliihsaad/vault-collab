@@ -15,6 +15,7 @@ import type {
   PingSessionResult,
   RegisterSessionInput,
   RegisteredSession,
+  RuntimeMetricsInput,
   SessionDeliveryMode,
   SessionFilters,
   SessionSnapshot,
@@ -184,19 +185,44 @@ export class SessionService {
     latestEventId: number
   ): SessionSnapshot {
     this.assertOwnedSession(sessionUid, sessionToken);
+    if (!Number.isInteger(latestEventId) || latestEventId < 0) {
+      throw new Error("latestEventId must be a non-negative integer");
+    }
     const acknowledgedAt = this.now();
 
-    this.db
-      .prepare(
+    const acknowledge = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          INSERT INTO session_attention_cursors (
+            session_uid,
+            stream,
+            latest_event_id,
+            acknowledged_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(session_uid, stream) DO UPDATE SET
+            latest_event_id = excluded.latest_event_id,
+            acknowledged_at = excluded.acknowledged_at,
+            updated_at = excluded.updated_at
         `
-        UPDATE sessions
-        SET delivery_last_ack_event_id = ?,
-            delivery_last_ack_at = ?,
-            updated_at = ?
-        WHERE session_uid = ?
-      `
-      )
-      .run(latestEventId, acknowledgedAt, acknowledgedAt, sessionUid);
+        )
+        .run(sessionUid, "default", latestEventId, acknowledgedAt, acknowledgedAt);
+
+      this.db
+        .prepare(
+          `
+          UPDATE sessions
+          SET delivery_last_ack_event_id = ?,
+              delivery_last_ack_at = ?,
+              updated_at = ?
+          WHERE session_uid = ?
+        `
+        )
+        .run(latestEventId, acknowledgedAt, acknowledgedAt, sessionUid);
+    });
+    acknowledge();
 
     this.events.recordEvent({
       eventType: "session.attention_acknowledged",
@@ -208,6 +234,114 @@ export class SessionService {
     });
 
     return this.requirePublicSession(sessionUid);
+  }
+
+  getAttentionCursor(sessionUid: string, stream = "default"): number {
+    const row = this.db
+      .prepare(
+        `
+        SELECT latest_event_id
+        FROM session_attention_cursors
+        WHERE session_uid = ?
+          AND stream = ?
+      `
+      )
+      .get(sessionUid, stream) as { latest_event_id: number } | undefined;
+
+    if (row) {
+      return row.latest_event_id;
+    }
+
+    const session = this.findSessionRow(sessionUid);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionUid}`);
+    }
+
+    return session.delivery_last_ack_event_id ?? 0;
+  }
+
+  reportRuntimeMetrics(
+    sessionUid: string,
+    sessionToken: string,
+    input: RuntimeMetricsInput
+  ): { session: SessionSnapshot; emittedEvents: EventRecord[] } {
+    const row = this.assertOwnedSession(sessionUid, sessionToken);
+    const emittedEvents: EventRecord[] = [];
+    const contextLimitTokens = input.contextLimitTokens ?? null;
+    const contextUsedTokens = input.contextUsedTokens ?? null;
+    const contextThresholdRatio = input.contextThresholdRatio ?? 0.8;
+
+    if (
+      contextLimitTokens !== null ||
+      contextUsedTokens !== null ||
+      input.contextThresholdRatio !== undefined && input.contextThresholdRatio !== null
+    ) {
+      this.assertFiniteNumber(contextLimitTokens, "contextLimitTokens");
+      this.assertFiniteNumber(contextUsedTokens, "contextUsedTokens");
+      this.assertFiniteNumber(contextThresholdRatio, "contextThresholdRatio");
+      if (contextLimitTokens === null || contextUsedTokens === null) {
+        throw new Error("contextUsedTokens and contextLimitTokens must be reported together");
+      }
+      if (contextLimitTokens <= 0) {
+        throw new Error("contextLimitTokens must be greater than 0");
+      }
+      if (contextUsedTokens < 0) {
+        throw new Error("contextUsedTokens must be 0 or greater");
+      }
+      if (contextThresholdRatio <= 0 || contextThresholdRatio > 1) {
+        throw new Error("contextThresholdRatio must be greater than 0 and at most 1");
+      }
+
+      const usageRatio = contextUsedTokens / contextLimitTokens;
+      if (usageRatio >= contextThresholdRatio) {
+        emittedEvents.push(
+          this.events.recordEvent({
+            eventType: "context.limit_warning",
+            sessionUid,
+            payload: {
+              project: row.project,
+              contextUsedTokens,
+              contextLimitTokens,
+              usageRatio: roundMetric(usageRatio),
+              thresholdRatio: contextThresholdRatio,
+              remainingTokens: Math.max(0, contextLimitTokens - contextUsedTokens)
+            }
+          })
+        );
+      }
+    }
+
+    const costUsd = input.costUsd ?? null;
+    const costThresholdUsd = input.costThresholdUsd ?? null;
+    if (costUsd !== null || costThresholdUsd !== null) {
+      this.assertFiniteNumber(costUsd, "costUsd");
+      this.assertFiniteNumber(costThresholdUsd, "costThresholdUsd");
+      if (costUsd === null || costThresholdUsd === null) {
+        throw new Error("costUsd and costThresholdUsd must be reported together");
+      }
+      if (costUsd < 0 || costThresholdUsd < 0) {
+        throw new Error("cost metrics must be 0 or greater");
+      }
+
+      if (costUsd >= costThresholdUsd) {
+        emittedEvents.push(
+          this.events.recordEvent({
+            eventType: "cost.threshold_warning",
+            sessionUid,
+            payload: {
+              project: row.project,
+              costUsd,
+              thresholdUsd: costThresholdUsd
+            }
+          })
+        );
+      }
+    }
+
+    return {
+      session: this.mapPublicSession(row),
+      emittedEvents
+    };
   }
 
   private updateHeartbeat(
@@ -507,6 +641,12 @@ export class SessionService {
   private assertNonEmpty(value: string, label: string): void {
     if (value.trim() === "") {
       throw new Error(`${label} cannot be empty`);
+    }
+  }
+
+  private assertFiniteNumber(value: number | null, label: string): void {
+    if (value !== null && (!Number.isFinite(value) || Number.isNaN(value))) {
+      throw new Error(`${label} must be a finite number`);
     }
   }
 
@@ -903,4 +1043,8 @@ export class SessionService {
 
     return resolveRoleProfileIdFromDb(this.db, resolvedRole);
   }
+}
+
+function roundMetric(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
 }

@@ -1,0 +1,114 @@
+import { describe, expect, it } from "vitest";
+import {
+  assertTokenSafePayload,
+  eventTypeRegistry,
+  getEventTypeDefinition,
+  redactTokenUnsafeValue
+} from "../src/event-registry.js";
+
+const requiredNamespaces = [
+  "session",
+  "handoff",
+  "tool",
+  "permission",
+  "discussion",
+  "memory",
+  "policy",
+  "context",
+  "cost",
+  "loop"
+];
+
+describe("event type registry", () => {
+  it("defines canonical token-safe event types for every Phase 3 namespace", () => {
+    const namespaces = new Set<string>(eventTypeRegistry.map((eventType) => eventType.namespace));
+
+    for (const namespace of requiredNamespaces) {
+      expect(namespaces.has(namespace), `missing namespace ${namespace}`).toBe(true);
+    }
+
+    expect(getEventTypeDefinition("tool.call_before")).toMatchObject({
+      canonicalName: "tool.call_before",
+      namespace: "tool",
+      attention: {
+        itemKind: null
+      }
+    });
+    expect(getEventTypeDefinition("context.limit_warning")).toMatchObject({
+      canonicalName: "context.limit_warning",
+      namespace: "context",
+      attention: {
+        itemKind: "context_warning",
+        roleProfileIds: ["coordinator", "runtime-loop-operator"]
+      }
+    });
+    expect(getEventTypeDefinition("cost.threshold_warning")).toMatchObject({
+      attention: {
+        itemKind: "cost_warning",
+        roleProfileIds: ["coordinator", "runtime-loop-operator", "release-agent"]
+      }
+    });
+    expect(getEventTypeDefinition("loop.stall_detected")).toMatchObject({
+      attention: {
+        itemKind: "loop_stall",
+        roleProfileIds: ["coordinator", "runtime-loop-operator"]
+      }
+    });
+
+    for (const definition of eventTypeRegistry) {
+      expect(definition.canonicalName).toMatch(/^[a-z_]+\.[a-z0-9_]+$/);
+      expect(definition.payloadShape).not.toEqual({});
+      expect(definition.tokenSafety.forbiddenPayloadKeys).toEqual(
+        expect.arrayContaining(["sessionToken", "session_token", "ownerToken", "claimToken"])
+      );
+      expect(definition.tokenSafety.rules.join("\n")).toMatch(/owner tokens/i);
+    }
+  });
+
+  it("rejects owner token keys anywhere in event payloads", () => {
+    expect(() =>
+      assertTokenSafePayload({
+        nested: {
+          sessionToken: "must-not-leak"
+        }
+      })
+    ).toThrow(/token/i);
+
+    expect(() =>
+      assertTokenSafePayload({
+        safe: true,
+        handoff: {
+          claim_token: "must-not-leak"
+        }
+      })
+    ).toThrow(/claim_token/i);
+
+    expect(() =>
+      assertTokenSafePayload({
+        sessionUid: "vc_sess_123",
+        handoffUid: "vc_handoff_123",
+        warningLevel: "high"
+      })
+    ).not.toThrow();
+  });
+
+  it("redacts token-like values from defensive audit metadata", () => {
+    expect(
+      redactTokenUnsafeValue({
+        toolName: "vault_collab_receive",
+        sessionToken: "secret",
+        nested: {
+          owner_token: "secret",
+          visible: "ok"
+        }
+      })
+    ).toEqual({
+      toolName: "vault_collab_receive",
+      sessionToken: "[REDACTED]",
+      nested: {
+        owner_token: "[REDACTED]",
+        visible: "ok"
+      }
+    });
+  });
+});

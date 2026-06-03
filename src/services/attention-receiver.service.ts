@@ -52,7 +52,7 @@ export class AttentionReceiverService {
       throw new Error(`Session not found: ${sessionUid}`);
     }
 
-    const fromEventId = session.delivery.lastAckEventId ?? 0;
+    const fromEventId = this.sessions.getAttentionCursor(sessionUid);
     const feed = this.attention.getSessionAttention(sessionUid, {
       sinceEventId: fromEventId,
       includeCurrentHandoffs: true
