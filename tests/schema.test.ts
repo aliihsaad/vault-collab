@@ -590,6 +590,14 @@ describe("Vault Collab schema migrations", () => {
       .toEqual({ role_profile_id: "reviewer" });
     expect(db.prepare("SELECT role_profile_id FROM role_profile_aliases WHERE alias = ?").get("sweeper"))
       .toEqual({ role_profile_id: "runtime-loop-operator" });
+    expect(db.prepare("SELECT role_profile_id FROM role_profile_aliases WHERE alias = ?").get("qa-reviewer"))
+      .toEqual({ role_profile_id: "qa-evaluator" });
+    expect(db.prepare("SELECT role_profile_id FROM role_profile_aliases WHERE alias = ?").get("investigator"))
+      .toEqual({ role_profile_id: "explorer" });
+    expect(db.prepare("SELECT role_profile_id FROM role_profile_aliases WHERE alias = ?").get("coder"))
+      .toEqual({ role_profile_id: "implementer" });
+    expect(db.prepare("SELECT role_profile_id FROM role_profile_aliases WHERE alias = ?").get("codex-agent"))
+      .toEqual({ role_profile_id: "implementer" });
     expect(db.prepare("SELECT role_profile_id FROM role_label_routes WHERE label = ?").all("loop"))
       .toEqual([expect.objectContaining({ role_profile_id: "loop-resolver" })]);
   });

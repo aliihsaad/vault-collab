@@ -17,7 +17,7 @@ import { AttentionReceiverService, type ReceiverAdapter } from "../services/atte
 import { SessionService } from "../services/session.service.js";
 import { ToolService } from "../services/tool.service.js";
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../services/vault-link.service.js";
-import { launchRequestStatuses, progressHandoffStatuses } from "../types.js";
+import { coreRoleProfileIds, launchRequestStatuses, progressHandoffStatuses } from "../types.js";
 import type {
   AgentProfileStatus,
   AttentionDeliveryAttemptStatus,
@@ -244,6 +244,9 @@ const launchRequestStatusSchema = z.enum(launchRequestStatusValues);
 const agentProfileStatusSchema = z.enum(agentProfileStatusValues);
 const discussionThreadStatusSchema = z.enum(discussionThreadStatusValues);
 const discussionMessageTypeSchema = z.enum(discussionMessageTypeValues);
+const roleProfileIdSchema = z.enum(coreRoleProfileIds);
+const registerSessionRoleProfileIdDescription =
+  "Must be one of the canonical role profile IDs. Agents MUST choose the closest matching office - do not invent new values.";
 
 const agentGuideInputSchema = z.object({
   clientType: clientTypeSchema.describe("Optional provider/client identifier for tailoring examples.").optional(),
@@ -280,8 +283,8 @@ const registerSessionInputSchema = z.object({
   workspacePath: optionalStringSchema("Required if workspace_path is omitted. Local workspace path."),
   workspace_path: optionalStringSchema("Snake_case alias for workspacePath."),
   role: optionalStringSchema("Optional session role label; defaults to implementer."),
-  roleProfileId: optionalStringSchema("Optional canonical role profile id or alias."),
-  role_profile_id: optionalStringSchema("Snake_case alias for roleProfileId."),
+  roleProfileId: roleProfileIdSchema.describe(registerSessionRoleProfileIdDescription).optional(),
+  role_profile_id: roleProfileIdSchema.describe(registerSessionRoleProfileIdDescription).optional(),
   agentUid: optionalStringSchema("Optional durable agent profile identifier."),
   agent_uid: optionalStringSchema("Snake_case alias for agentUid."),
   deliveryMode: sessionDeliveryModeSchema.describe("Optional attention delivery mode.").optional(),

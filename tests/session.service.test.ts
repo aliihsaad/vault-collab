@@ -135,6 +135,65 @@ describe("SessionService", () => {
       .toEqual({ role: "qa", role_profile_id: "qa-evaluator" });
   });
 
+  it("rejects non-canonical explicit role profile ids with valid options", () => {
+    expect(() =>
+      service.registerSession({
+        displayName: "Alias QA terminal",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath,
+        role: "qa",
+        roleProfileId: "qa-reviewer",
+        capabilities: {}
+      })
+    ).toThrow(
+      /Session roleProfileId must be one of the canonical role profile IDs: coordinator, explorer, planner, architect, implementer, reviewer, qa-evaluator, security-reviewer, documentation-agent, runtime-loop-operator, release-agent, pattern-mining-agent, loop-resolver/
+    );
+
+    const canonical = service.registerSession({
+      displayName: "Canonical QA terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "qa",
+      roleProfileId: "qa-evaluator",
+      capabilities: {}
+    });
+
+    expect(canonical.roleProfileId).toBe("qa-evaluator");
+  });
+
+  it("still resolves common aliases from the session role label", () => {
+    const qaReviewer = service.registerSession({
+      displayName: "QA reviewer terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "qa-reviewer",
+      capabilities: {}
+    });
+    const investigator = service.registerSession({
+      displayName: "Investigator terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "investigator",
+      capabilities: {}
+    });
+    const coder = service.registerSession({
+      displayName: "Coder terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "coder",
+      capabilities: {}
+    });
+
+    expect(qaReviewer.roleProfileId).toBe("qa-evaluator");
+    expect(investigator.roleProfileId).toBe("explorer");
+    expect(coder.roleProfileId).toBe("implementer");
+  });
+
   it("defaults manually registered sessions to manual polling delivery", () => {
     const registered = service.registerSession({
       displayName: "Manual Codex",

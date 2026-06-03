@@ -9,6 +9,7 @@ import {
   type VaultCollabToolResult
 } from "../src/mcp/tools.js";
 import { createCollabDatabase } from "../src/database/connection.js";
+import { coreRoleProfileIds } from "../src/types.js";
 import type { VaultMemoryClient, VaultMemorySaveInput } from "../src/services/vault-link.service.js";
 
 function structured<T>(result: VaultCollabToolResult): T {
@@ -717,6 +718,42 @@ describe("Vault Collab MCP tools", () => {
         "capabilities"
       ])
     );
+  });
+
+  it("advertises canonical-only role profile ids for register_session", () => {
+    const camel = schemaField("vault_collab_register_session", "roleProfileId");
+    const snake = schemaField("vault_collab_register_session", "role_profile_id");
+
+    for (const roleProfileId of coreRoleProfileIds) {
+      expect(camel.safeParse(roleProfileId).success, roleProfileId).toBe(true);
+      expect(snake.safeParse(roleProfileId).success, roleProfileId).toBe(true);
+    }
+
+    for (const invented of ["qa-reviewer", "investigator", "codex-agent"]) {
+      expect(camel.safeParse(invented).success, invented).toBe(false);
+      expect(snake.safeParse(invented).success, invented).toBe(false);
+    }
+  });
+
+  it("returns a clear register_session error for non-canonical roleProfileId values", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const rejected = await tools.callTool("vault_collab_register_session", {
+      displayName: "Alias QA terminal",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath: cwd,
+      roleProfileId: "qa-reviewer"
+    });
+
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content[0]).toMatchObject({ type: "text" });
+    const message = rejected.content[0]?.type === "text" ? rejected.content[0].text : "";
+    expect(message).toMatch(/Session roleProfileId must be one of the canonical role profile IDs/);
+    expect(message).toContain("qa-evaluator");
+    expect(message).toContain("loop-resolver");
+    expect(message).toContain("qa-reviewer");
   });
 
   it("documents role profile id inputs on write-path tools", () => {

@@ -5,8 +5,10 @@ import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type { LaunchRequestService } from "./launch-request.service.js";
 import { resolveRoleProfileIdFromDb } from "./role-profile-resolution.js";
+import { coreRoleProfileIds } from "../types.js";
 import type {
   ClientType,
+  CoreRoleProfileId,
   EventRecord,
   JsonRecord,
   LaunchRequestStatus,
@@ -72,6 +74,8 @@ const leasedHandoffStatuses = [
   "awaiting_user",
   "verification_needed"
 ] as const;
+const canonicalRoleProfileIds = new Set<string>(coreRoleProfileIds);
+const validRoleProfileIdMessage = coreRoleProfileIds.join(", ");
 
 export class SessionService {
   constructor(
@@ -1027,7 +1031,7 @@ export class SessionService {
     input: RegisterSessionInput,
     resolvedRole: string
   ): string | null {
-    const explicitRoleProfileId = resolveRoleProfileIdFromDb(this.db, input.roleProfileId);
+    const explicitRoleProfileId = this.resolveExplicitSessionRoleProfileId(input.roleProfileId);
     if (explicitRoleProfileId) {
       return explicitRoleProfileId;
     }
@@ -1042,6 +1046,23 @@ export class SessionService {
     }
 
     return resolveRoleProfileIdFromDb(this.db, resolvedRole);
+  }
+
+  private resolveExplicitSessionRoleProfileId(
+    roleProfileId: string | null | undefined
+  ): CoreRoleProfileId | null {
+    const normalized = roleProfileId?.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    if (!canonicalRoleProfileIds.has(normalized)) {
+      throw new Error(
+        `Session roleProfileId must be one of the canonical role profile IDs: ${validRoleProfileIdMessage}. Received: ${normalized}`
+      );
+    }
+
+    return normalized as CoreRoleProfileId;
   }
 }
 
