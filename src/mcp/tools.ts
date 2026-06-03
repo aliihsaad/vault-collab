@@ -11,6 +11,7 @@ import { EventService } from "../services/event.service.js";
 import { HandoffDetailService } from "../services/handoff-detail.service.js";
 import { HandoffService } from "../services/handoff.service.js";
 import { LaunchRequestService } from "../services/launch-request.service.js";
+import { SecurityScanner } from "../services/security-scanner.service.js";
 import { AttentionReceiverService, type ReceiverAdapter } from "../services/attention-receiver.service.js";
 import { SessionService } from "../services/session.service.js";
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../services/vault-link.service.js";
@@ -1038,7 +1039,8 @@ export function createVaultCollabMcpTools(
   const agents = new AgentProfileService(db, events, options.clock);
   const launchRequests = new LaunchRequestService(db, events, options.clock);
   const sessions = new SessionService(db, events, launchRequests, options.clock);
-  const handoffs = new HandoffService(db, events, options.clock);
+  const securityScanner = new SecurityScanner(db, events, options.clock);
+  const handoffs = new HandoffService(db, events, options.clock, securityScanner);
   const discussions = new DiscussionService(db, events, options.clock);
   const handoffDetails = new HandoffDetailService(handoffs, events, sessions, discussions);
   const attention = new AttentionService(db, sessions, handoffs, discussions, events, launchRequests);

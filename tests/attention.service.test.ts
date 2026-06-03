@@ -42,6 +42,7 @@ describe("AttentionService", () => {
       clientType: "codex",
       project: "Vault Collab",
       workspacePath,
+      role: "coordinator",
       capabilities: {
         launchRequests: true
       }
@@ -553,6 +554,64 @@ describe("AttentionService", () => {
       expect.arrayContaining(["context_warning", "cost_warning", "loop_stall"])
     );
     expect(JSON.stringify(runtimeFeed)).not.toContain(worker.sessionToken);
+  });
+
+  it("routes security finding events to coordinators and security reviewers", () => {
+    const securityReviewer = sessions.registerSession({
+      displayName: "Security Reviewer",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "security-reviewer",
+      capabilities: {}
+    });
+    const reviewer = sessions.registerSession({
+      displayName: "Reviewer",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      role: "reviewer",
+      capabilities: {}
+    });
+
+    const finding = events.recordEvent({
+      eventType: "security.finding",
+      sessionUid: worker.sessionUid,
+      payload: {
+        project: "Vault Collab",
+        scanUid: "sec_scan_test",
+        domain: "owner-token-handling",
+        severity: "high",
+        findingCode: "owner_token.event_payload",
+        findingSummary: "Unsafe token key was found in persisted event payload metadata.",
+        evidenceCount: 1
+      }
+    });
+
+    const coordinatorFeed = attention.getSessionAttention(coordinator.sessionUid, {
+      includeCurrentHandoffs: false
+    });
+    const securityFeed = attention.getSessionAttention(securityReviewer.sessionUid, {
+      includeCurrentHandoffs: false
+    });
+    const reviewerFeed = attention.getSessionAttention(reviewer.sessionUid, {
+      includeCurrentHandoffs: false
+    });
+
+    expect(coordinatorFeed.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "security_finding",
+          event: expect.objectContaining({
+            eventId: finding.eventId,
+            eventType: "security.finding"
+          })
+        })
+      ])
+    );
+    expect(securityFeed.items.map((item) => item.kind)).toContain("security_finding");
+    expect(reviewerFeed.items.map((item) => item.kind)).not.toContain("security_finding");
+    expect(JSON.stringify(coordinatorFeed)).not.toContain(worker.sessionToken);
   });
 
   it("can receive without advancing the cursor", () => {

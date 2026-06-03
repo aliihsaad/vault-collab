@@ -7,6 +7,7 @@ export type EventNamespace =
   | "permission"
   | "discussion"
   | "memory"
+  | "security"
   | "policy"
   | "context"
   | "cost"
@@ -248,6 +249,17 @@ export const eventTypeRegistry: EventTypeDefinition[] = [
     memoryType: "string",
     title: "string"
   }, noAttention),
+
+  define("security.finding", "security", "A deterministic security scan finding needs review.", {
+    project: "string",
+    scanUid: "security scan identifier",
+    domain: "SecurityScanDomain",
+    severity: "low | medium | high | critical",
+    findingCode: "stable finding code",
+    findingSummary: "token-safe summary",
+    evidenceCount: "number",
+    evidencePackVaultMemoryUid: "vm_* | null, optional"
+  }, roleAttention("security_finding", ["coordinator", "security-reviewer"])),
 
   define(
     "policy.agent_profile_upserted",

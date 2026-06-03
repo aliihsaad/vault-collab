@@ -18,6 +18,29 @@ export type SessionStatus =
 
 export type JsonRecord = Record<string, unknown>;
 
+export type SecurityFindingSeverity = "low" | "medium" | "high" | "critical";
+
+export type SecurityScanDomain =
+  | "sessions"
+  | "handoffs"
+  | "discussions"
+  | "vault-memory-links"
+  | "mcp-configs"
+  | "connector-permissions"
+  | "dashboard-affordances"
+  | "owner-token-handling"
+  | "launch-broker-actions"
+  | "direct-db-writers"
+  | "external-action-settings";
+
+export interface GateGuardAssessment {
+  required: boolean;
+  riskLevel: SecurityFindingSeverity;
+  reason: string;
+  factsRequired: string[];
+  findingCodes: string[];
+}
+
 /**
  * @deprecated Push/wake delivery modes are superseded by the pull-based receive
  * loop. Keep these values for dashboard compatibility until the push broker is
@@ -333,6 +356,7 @@ export type AttentionItemKind =
   | "discussion_message"
   | "tool_failure"
   | "policy_notice"
+  | "security_finding"
   | "context_warning"
   | "cost_warning"
   | "loop_stall"
@@ -741,6 +765,7 @@ export interface HandoffActionAffordance {
   requiresReason: boolean;
   requiresSummary: boolean;
   requiresEvidenceVaultMemoryUid: boolean;
+  gateGuard: GateGuardAssessment;
 }
 
 export interface HandoffActionSet {

@@ -330,6 +330,7 @@ export class AttentionService {
       "session_permission",
       "handoff_permission",
       "policy_notice",
+      "security_finding",
       "context_warning",
       "cost_warning",
       "loop_stall",

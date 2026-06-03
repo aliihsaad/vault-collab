@@ -13,6 +13,7 @@ const requiredNamespaces = [
   "permission",
   "discussion",
   "memory",
+  "security",
   "policy",
   "context",
   "cost",
@@ -46,6 +47,14 @@ describe("event type registry", () => {
       attention: {
         itemKind: "cost_warning",
         roleProfileIds: ["coordinator", "runtime-loop-operator", "release-agent"]
+      }
+    });
+    expect(getEventTypeDefinition("security.finding")).toMatchObject({
+      canonicalName: "security.finding",
+      namespace: "security",
+      attention: {
+        itemKind: "security_finding",
+        roleProfileIds: ["coordinator", "security-reviewer"]
       }
     });
     expect(getEventTypeDefinition("loop.stall_detected")).toMatchObject({

@@ -4,6 +4,7 @@ import { getLeaseTtlMs } from "../src/lease.js";
 import { EventService } from "../src/services/event.service.js";
 import { HandoffService } from "../src/services/handoff.service.js";
 import { LaunchRequestService } from "../src/services/launch-request.service.js";
+import { SecurityScanner } from "../src/services/security-scanner.service.js";
 import { SessionService } from "../src/services/session.service.js";
 import type { RegisteredSession } from "../src/types.js";
 
@@ -70,6 +71,7 @@ describe("HandoffService", () => {
   let db: CollabDatabase;
   let now: Date;
   let events: EventService;
+  let security: SecurityScanner;
   let sessions: SessionService;
   let handoffs: HandoffService;
   let codex: RegisteredSession;
@@ -81,8 +83,9 @@ describe("HandoffService", () => {
     db = createCollabDatabase(":memory:");
     events = new EventService(db, clock);
     const launchRequests = new LaunchRequestService(db, events, clock);
+    security = new SecurityScanner(db, events, clock);
     sessions = new SessionService(db, events, launchRequests, clock);
-    handoffs = new HandoffService(db, events, clock);
+    handoffs = new HandoffService(db, events, clock, security);
 
     codex = sessions.registerSession({
       displayName: "Codex",
@@ -589,7 +592,12 @@ describe("HandoffService", () => {
           kind: "resolve",
           enabled: true,
           toolName: "vault_collab_resolve_handoff",
-          requiresSummary: true
+          requiresSummary: true,
+          gateGuard: expect.objectContaining({
+            required: true,
+            riskLevel: "medium",
+            factsRequired: expect.arrayContaining(["completion evidence", "verification status"])
+          })
         }),
         expect.objectContaining({
           kind: "release",
@@ -639,7 +647,12 @@ describe("HandoffService", () => {
           enabled: true,
           toolName: "vault_collab_reopen_handoff",
           requiresReason: true,
-          requiresOwnerToken: false
+          requiresOwnerToken: false,
+          gateGuard: expect.objectContaining({
+            required: true,
+            riskLevel: "high",
+            findingCodes: expect.arrayContaining(["handoff.reopen_requires_reason"])
+          })
         })
       ])
     );

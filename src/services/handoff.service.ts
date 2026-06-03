@@ -20,6 +20,7 @@ import type {
   HandoffStatus,
   HandoffTypedPayload,
   JsonRecord,
+  GateGuardAssessment,
   PermissionRequestInput,
   PublishHandoffInput,
   RecoverHandoffInput,
@@ -71,6 +72,22 @@ interface DetectStalledHandoffsOptions {
   thresholdMs: number;
 }
 
+interface HandoffGateGuard {
+  assessHandoffActionRisk(input: {
+    project: string;
+    handoffUid: string;
+    actionKind: HandoffActionKind;
+    handoffStatus: HandoffStatus;
+    actorSessionUid: string;
+    actorCapabilities: JsonRecord;
+    sourceSessionUid: string | null;
+    claimedBySessionUid: string | null;
+    vaultMemoryUid: string | null;
+    labels: string[];
+    queueKey: string;
+  }): GateGuardAssessment;
+}
+
 const closedInboxStatuses: HandoffStatus[] = ["resolved", "abandoned", "stale"];
 const leasedHandoffStatuses: HandoffStatus[] = [
   "claimed",
@@ -104,7 +121,8 @@ export class HandoffService {
   constructor(
     private readonly db: CollabDatabase,
     private readonly events: EventService,
-    private readonly clock: () => Date = () => new Date()
+    private readonly clock: () => Date = () => new Date(),
+    private readonly gateGuard?: HandoffGateGuard
   ) {}
 
   publishHandoff(input: PublishHandoffInput): HandoffRecord {
@@ -295,6 +313,8 @@ export class HandoffService {
     const hasRecoveryCapability =
       actorCapabilities.handoffRecovery === true || actorCapabilities.admin === true;
     const canRecover = !isClosed && (isSourceSession || hasRecoveryCapability);
+    const gateGuardFor = (kind: HandoffActionKind): GateGuardAssessment =>
+      this.gateGuardForHandoffAction(row, sessionUid, actorCapabilities, kind);
 
     return {
       handoff: this.mapRow(row),
@@ -304,41 +324,47 @@ export class HandoffService {
           kind: "claim",
           toolName: "vault_collab_claim_handoff",
           enabled: row.status === "available" && row.claimed_by_session_uid === null,
-          reason: this.claimActionReason(row, isClaimOwner)
+          reason: this.claimActionReason(row, isClaimOwner),
+          gateGuard: gateGuardFor("claim")
         }),
         this.actionAffordance({
           kind: "update",
           toolName: "vault_collab_update_handoff",
           requiresProgressNote: true,
           enabled: !isClosed && isClaimOwner,
-          reason: this.claimOwnerActionReason(row, isClaimOwner, "update")
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "update"),
+          gateGuard: gateGuardFor("update")
         }),
         this.actionAffordance({
           kind: "request_user_confirmation",
           toolName: "vault_collab_request_user_confirmation",
           requiresQuestion: true,
           enabled: !isClosed && isClaimOwner,
-          reason: this.claimOwnerActionReason(row, isClaimOwner, "request user confirmation")
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "request user confirmation"),
+          gateGuard: gateGuardFor("request_user_confirmation")
         }),
         this.actionAffordance({
           kind: "request_handoff_permission",
           toolName: "vault_collab_request_handoff_permission",
           requiresQuestion: true,
           enabled: !isClosed && isClaimOwner,
-          reason: this.claimOwnerActionReason(row, isClaimOwner, "request handoff permission")
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "request handoff permission"),
+          gateGuard: gateGuardFor("request_handoff_permission")
         }),
         this.actionAffordance({
           kind: "release",
           toolName: "vault_collab_release_handoff",
           enabled: !isClosed && isClaimOwner,
-          reason: this.claimOwnerActionReason(row, isClaimOwner, "release")
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "release"),
+          gateGuard: gateGuardFor("release")
         }),
         this.actionAffordance({
           kind: "resolve",
           toolName: "vault_collab_resolve_handoff",
           requiresSummary: true,
           enabled: !isClosed && isClaimOwner,
-          reason: this.claimOwnerActionReason(row, isClaimOwner, "resolve")
+          reason: this.claimOwnerActionReason(row, isClaimOwner, "resolve"),
+          gateGuard: gateGuardFor("resolve")
         }),
         this.actionAffordance({
           kind: "recover",
@@ -348,7 +374,8 @@ export class HandoffService {
           requiresSummary: true,
           requiresEvidenceVaultMemoryUid: true,
           enabled: canRecover,
-          reason: this.recoverActionReason(row, isSourceSession, hasRecoveryCapability)
+          reason: this.recoverActionReason(row, isSourceSession, hasRecoveryCapability),
+          gateGuard: gateGuardFor("recover")
         }),
         this.actionAffordance({
           kind: "reopen",
@@ -358,7 +385,8 @@ export class HandoffService {
           enabled: isClosed,
           reason: isClosed
             ? "Closed handoff can be reopened as recoverable work."
-            : `Handoff must be closed to reopen; current status is ${row.status}.`
+            : `Handoff must be closed to reopen; current status is ${row.status}.`,
+          gateGuard: gateGuardFor("reopen")
         })
       ]
     };
@@ -1139,6 +1167,7 @@ export class HandoffService {
     requiresReason?: boolean;
     requiresSummary?: boolean;
     requiresEvidenceVaultMemoryUid?: boolean;
+    gateGuard?: GateGuardAssessment;
   }): HandoffActionAffordance {
     return {
       kind: input.kind,
@@ -1151,7 +1180,41 @@ export class HandoffService {
       requiresQuestion: input.requiresQuestion ?? false,
       requiresReason: input.requiresReason ?? false,
       requiresSummary: input.requiresSummary ?? false,
-      requiresEvidenceVaultMemoryUid: input.requiresEvidenceVaultMemoryUid ?? false
+      requiresEvidenceVaultMemoryUid: input.requiresEvidenceVaultMemoryUid ?? false,
+      gateGuard: input.gateGuard ?? this.noGateGuardRequired()
+    };
+  }
+
+  private gateGuardForHandoffAction(
+    row: HandoffRow,
+    actorSessionUid: string,
+    actorCapabilities: JsonRecord,
+    actionKind: HandoffActionKind
+  ): GateGuardAssessment {
+    return (
+      this.gateGuard?.assessHandoffActionRisk({
+        project: row.target_project,
+        handoffUid: row.handoff_uid,
+        actionKind,
+        handoffStatus: row.status,
+        actorSessionUid,
+        actorCapabilities,
+        sourceSessionUid: row.source_session_uid,
+        claimedBySessionUid: row.claimed_by_session_uid,
+        vaultMemoryUid: row.vault_memory_uid,
+        labels: JSON.parse(row.labels_json) as string[],
+        queueKey: row.queue_key
+      }) ?? this.noGateGuardRequired()
+    );
+  }
+
+  private noGateGuardRequired(): GateGuardAssessment {
+    return {
+      required: false,
+      riskLevel: "low",
+      reason: "No GateGuard fact check is required for this handoff action.",
+      factsRequired: [],
+      findingCodes: []
     };
   }
 

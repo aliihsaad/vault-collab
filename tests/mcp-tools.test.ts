@@ -270,6 +270,7 @@ describe("Vault Collab MCP tools", () => {
         "tool.call_before",
         "tool.call_after",
         "tool.call_failure",
+        "security.finding",
         "context.limit_warning",
         "cost.threshold_warning",
         "loop.stall_detected"
