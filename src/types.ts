@@ -121,6 +121,7 @@ export type RoleCapability =
   | "vault_memory_write"
   | "vault_collab_read"
   | "vault_collab_write"
+  | "sessionAdmin"
   | "publish_handoff"
   | "claim_handoff"
   | "create_discussion"

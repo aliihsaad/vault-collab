@@ -100,10 +100,11 @@ export class SessionService {
     const sessionToken = randomBytes(32).toString("base64url");
     const deliveryMode = input.delivery?.mode ?? "manual_poll";
     const deliveryWakeable = input.delivery?.wakeable === true ? 1 : 0;
-    const capabilities = this.normalizeLaunchCapabilities(input.capabilities ?? {});
+    const inputCapabilities = this.normalizeLaunchCapabilities(input.capabilities ?? {});
     const sessionProjectKey = projectKey(input.project);
     const role = this.resolveSessionRole(input);
     const roleProfileId = this.resolveSessionRoleProfileId(input, role);
+    const capabilities = this.mergeRoleProfileCapabilities(roleProfileId, inputCapabilities);
 
     const register = this.db.transaction(() => {
       this.db
@@ -819,6 +820,52 @@ export class SessionService {
       ...capabilities,
       launchRequestUid,
       launchedBy: launchRequestUid
+    };
+  }
+
+  private mergeRoleProfileCapabilities(
+    roleProfileId: string | null,
+    inputCapabilities: JsonRecord
+  ): JsonRecord {
+    if (!roleProfileId) {
+      return inputCapabilities;
+    }
+
+    const row = this.db
+      .prepare(
+        `
+        SELECT capability_set_json
+        FROM role_profiles
+        WHERE role_profile_id = ?
+          AND status = 'active'
+      `
+      )
+      .get(roleProfileId) as { capability_set_json: string } | undefined;
+    if (!row) {
+      return inputCapabilities;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.capability_set_json);
+    } catch {
+      return inputCapabilities;
+    }
+
+    if (!Array.isArray(parsed)) {
+      return inputCapabilities;
+    }
+
+    const roleCapabilities = parsed.reduce<JsonRecord>((merged, capability) => {
+      if (typeof capability === "string" && capability.trim() !== "") {
+        merged[capability] = true;
+      }
+      return merged;
+    }, {});
+
+    return {
+      ...inputCapabilities,
+      ...roleCapabilities
     };
   }
 

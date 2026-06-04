@@ -777,6 +777,7 @@ export const builtInRoleProfiles: RoleProfile[] = [
     [
       "vault_collab_read",
       "vault_collab_write",
+      "sessionAdmin",
       "publish_handoff",
       "create_discussion",
       "vault_memory_read",
@@ -972,7 +973,14 @@ export const builtInRoleProfiles: RoleProfile[] = [
     "Supervise live coordination health: leases, stale handoffs, blocked or idle sessions, repeated failures, permission waits, and loop escalation.",
     "operations",
     "coordination_write",
-    ["vault_collab_read", "vault_collab_write", "claim_handoff", "create_discussion", "vault_memory_write"],
+    [
+      "vault_collab_read",
+      "vault_collab_write",
+      "sessionAdmin",
+      "claim_handoff",
+      "create_discussion",
+      "vault_memory_write"
+    ],
     ["runtime", "stale", "lease", "blocked", "idle", "attention", "permission-needed", "stuck"],
     ["vault_memory", "discussion_decision", "runtime_artifact"],
     {

@@ -118,9 +118,16 @@ describe("SessionService", () => {
     expect(registered.sessionUid).toMatch(/^vc_sess_/);
     expect(registered.sessionToken).toHaveLength(43);
     expect(registered.status).toBe("idle");
-    expect(registered.capabilities).toEqual({
+    expect(registered.capabilities).toMatchObject({
+      edit_files: true,
       handoffs: true,
-      maxConcurrentHandoffs: 1
+      maxConcurrentHandoffs: 1,
+      read_files: true,
+      run_tests: true,
+      search_files: true,
+      shell_commands: true,
+      vault_collab_write: true,
+      vault_memory_write: true
     });
     expect(registered.createdAt).toBe("2026-05-28T10:00:00.000Z");
     expect(registered.lastHeartbeatAt).toBe("2026-05-28T10:00:00.000Z");
@@ -1051,6 +1058,78 @@ describe("SessionService", () => {
       });
     expect(JSON.stringify(closed)).not.toContain(stale.sessionToken);
     expect(JSON.stringify(closed)).not.toContain(admin.sessionToken);
+  });
+
+  it("lets a coordinator role-profile session close a foreign complete session", () => {
+    const coordinator = service.registerSession({
+      displayName: "Coordinator",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      roleProfileId: "coordinator",
+      capabilities: {}
+    });
+    const target = service.registerSession({
+      displayName: "Completed worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    service.updateSessionState(target.sessionUid, target.sessionToken, "complete", "Done.");
+    now = new Date("2026-05-28T10:02:50.000Z");
+
+    const closed = service.closeSession(
+      target.sessionUid,
+      coordinator.sessionUid,
+      coordinator.sessionToken,
+      "Coordinator roster sweep"
+    );
+
+    expect(closed).toMatchObject({
+      sessionUid: target.sessionUid,
+      status: "disconnected",
+      statusDetail: "Coordinator roster sweep",
+      disconnectedAt: "2026-05-28T10:02:50.000Z"
+    });
+    expect(closed).not.toHaveProperty("sessionToken");
+    expect(events.listEvents({ sessionUid: target.sessionUid, eventType: "session.disconnected" })[0])
+      .toMatchObject({
+        payload: {
+          actorSessionUid: coordinator.sessionUid,
+          reason: "Coordinator roster sweep"
+        }
+      });
+    expect(JSON.stringify(closed)).not.toContain(target.sessionToken);
+    expect(JSON.stringify(closed)).not.toContain(coordinator.sessionToken);
+  });
+
+  it("keeps implementer role-profile sessions denied from closing foreign disconnected sessions", () => {
+    const implementer = service.registerSession({
+      displayName: "Implementer",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      roleProfileId: "implementer",
+      capabilities: {}
+    });
+    const target = service.registerSession({
+      displayName: "Disconnected worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    service.disconnectSession(target.sessionUid, target.sessionToken);
+
+    expect(() =>
+      service.closeSession(
+        target.sessionUid,
+        implementer.sessionUid,
+        implementer.sessionToken,
+        "Implementer roster sweep"
+      )
+    ).toThrow(/session requires session admin capability/i);
   });
 
   it("lists sessions by project and client type", () => {
