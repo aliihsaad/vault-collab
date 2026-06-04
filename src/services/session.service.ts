@@ -1,10 +1,11 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { CollabDatabase } from "../database/connection.js";
 import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type { LaunchRequestService } from "./launch-request.service.js";
 import { resolveRoleProfileIdFromDb } from "./role-profile-resolution.js";
+import { validateVaultCollabSessionSnapshot } from "./snapshot-validator.js";
 import { coreRoleProfileIds } from "../types.js";
 import type {
   ClientType,
@@ -17,12 +18,17 @@ import type {
   PingSessionResult,
   RegisterSessionInput,
   RegisteredSession,
+  ReportSessionInput,
+  ReportSessionResult,
   RuntimeMetricsInput,
+  SessionAdapterType,
   SessionDeliveryMode,
   SessionFilters,
   SessionSnapshot,
-  SessionStatus
+  SessionStatus,
+  VaultCollabSessionSnapshotV1
 } from "../types.js";
+import { SessionAdapterType as SessionAdapterTypeValue } from "../types.js";
 
 interface SessionRow {
   session_uid: string;
@@ -45,6 +51,9 @@ interface SessionRow {
   delivery_wakeable: number;
   delivery_last_ack_event_id: number | null;
   delivery_last_ack_at: string | null;
+  last_snapshot_json: string | null;
+  snapshot_reported_at: string | null;
+  adapter_type: SessionAdapterType | null;
   session_token: string;
   last_heartbeat_at: string;
   created_at: string;
@@ -344,6 +353,110 @@ export class SessionService {
 
     return {
       session: this.mapPublicSession(row),
+      emittedEvents
+    };
+  }
+
+  reportSession(input: ReportSessionInput): ReportSessionResult {
+    const row = this.findSessionRow(input.sessionUid);
+    if (!row) {
+      throw new Error(`Session not found: ${input.sessionUid}`);
+    }
+
+    const sessionToken = input.sessionToken?.trim() || null;
+    const adapterToken = input.adapterToken?.trim() || null;
+    if ((sessionToken ? 1 : 0) + (adapterToken ? 1 : 0) !== 1) {
+      throw new Error("Exactly one of sessionToken or adapterToken is required");
+    }
+
+    let snapshot = validateVaultCollabSessionSnapshot(input.snapshot, {
+      sessionUid: input.sessionUid,
+      project: row.project
+    });
+
+    if (sessionToken) {
+      if (row.session_token !== sessionToken) {
+        throw new Error("Invalid session token");
+      }
+    } else if (adapterToken) {
+      this.assertAdapterToken(input.sessionUid, snapshot.adapterId, adapterToken);
+    }
+
+    snapshot = this.normalizeSessionSnapshot(snapshot);
+    if (
+      row.adapter_type &&
+      row.adapter_type !== SessionAdapterTypeValue.Native &&
+      row.adapter_type !== snapshot.capabilities.adapterType
+    ) {
+      throw new Error("Session adapter type cannot change after adapter-backed reporting starts");
+    }
+
+    const now = this.now();
+    const emittedEvents: EventRecord[] = [];
+    const report = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+          UPDATE sessions
+          SET last_snapshot_json = ?,
+              snapshot_reported_at = ?,
+              adapter_type = ?,
+              last_heartbeat_at = ?,
+              updated_at = ?
+          WHERE session_uid = ?
+        `
+        )
+        .run(
+          JSON.stringify(snapshot),
+          now,
+          snapshot.capabilities.adapterType,
+          now,
+          now,
+          input.sessionUid
+        );
+
+      emittedEvents.push(
+        this.events.recordEvent({
+          eventType: "session.snapshot_reported",
+          sessionUid: input.sessionUid,
+          payload: {
+            schemaVersion: snapshot.schemaVersion,
+            adapterId: snapshot.adapterId,
+            adapterType: snapshot.capabilities.adapterType,
+            project: snapshot.project,
+            state: snapshot.state,
+            riskLevel: snapshot.risk.level,
+            activeHandoffCount: snapshot.active_handoffs.length,
+            progressPercent: snapshot.progress.percentComplete,
+            snapshotReportedAt: now,
+            payloadKeys: Object.keys(snapshot)
+          }
+        })
+      );
+
+      if (snapshot.risk.level === "critical") {
+        emittedEvents.push(
+          this.events.recordEvent({
+            eventType: "risk.critical_reported",
+            sessionUid: input.sessionUid,
+            payload: {
+              project: snapshot.project,
+              reportedSessionUid: input.sessionUid,
+              adapterId: snapshot.adapterId,
+              adapterType: snapshot.capabilities.adapterType,
+              riskLevel: "critical",
+              reasons: snapshot.risk.reasons,
+              snapshotReportedAt: now
+            }
+          })
+        );
+      }
+    });
+    report();
+
+    return {
+      session: this.requirePublicSession(input.sessionUid),
+      snapshot,
       emittedEvents
     };
   }
@@ -651,6 +764,48 @@ export class SessionService {
   private assertFiniteNumber(value: number | null, label: string): void {
     if (value !== null && (!Number.isFinite(value) || Number.isNaN(value))) {
       throw new Error(`${label} must be a finite number`);
+    }
+  }
+
+  private assertAdapterToken(sessionUid: string, adapterId: string, adapterToken: string): void {
+    const secret = process.env.VAULT_COLLAB_ADAPTER_TOKEN_SECRET?.trim();
+    if (!secret) {
+      throw new Error("Adapter token secret is not configured");
+    }
+
+    const expected = deriveSessionAdapterToken(secret, sessionUid, adapterId);
+    if (!timingSafeTokenEquals(adapterToken, expected)) {
+      throw new Error("Invalid adapter token");
+    }
+  }
+
+  private normalizeSessionSnapshot(
+    snapshot: VaultCollabSessionSnapshotV1
+  ): VaultCollabSessionSnapshotV1 {
+    if (snapshot.capabilities.adapterType !== SessionAdapterTypeValue.InstructionBacked) {
+      return snapshot;
+    }
+
+    return {
+      ...snapshot,
+      capabilities: {
+        ...snapshot.capabilities,
+        canMutateHandoffs: false,
+        canPublishHandoffs: false,
+        canSendMessages: false
+      }
+    };
+  }
+
+  private parseLastSnapshot(snapshotJson: string | null): VaultCollabSessionSnapshotV1 | null {
+    if (!snapshotJson) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(snapshotJson) as VaultCollabSessionSnapshotV1;
+    } catch {
+      return null;
     }
   }
 
@@ -964,6 +1119,9 @@ export class SessionService {
         lastAckEventId: row.delivery_last_ack_event_id,
         lastAckAt: row.delivery_last_ack_at
       },
+      adapterType: row.adapter_type ?? SessionAdapterTypeValue.Native,
+      lastSnapshot: this.parseLastSnapshot(row.last_snapshot_json),
+      snapshotReportedAt: row.snapshot_reported_at,
       lastHeartbeatAt: row.last_heartbeat_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -998,6 +1156,9 @@ export class SessionService {
           sessions.delivery_wakeable,
           sessions.delivery_last_ack_event_id,
           sessions.delivery_last_ack_at,
+          sessions.last_snapshot_json,
+          sessions.snapshot_reported_at,
+          sessions.adapter_type,
           sessions.session_token,
           sessions.last_heartbeat_at,
           sessions.created_at,
@@ -1068,4 +1229,23 @@ export class SessionService {
 
 function roundMetric(value: number): number {
   return Math.round(value * 10_000) / 10_000;
+}
+
+export function deriveSessionAdapterToken(
+  secret: string,
+  sessionUid: string,
+  adapterId: string
+): string {
+  return createHmac("sha256", secret)
+    .update(`${sessionUid}\0${adapterId}`)
+    .digest("base64url");
+}
+
+function timingSafeTokenEquals(received: string, expected: string): boolean {
+  const receivedBuffer = Buffer.from(received);
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    receivedBuffer.length === expectedBuffer.length &&
+    timingSafeEqual(receivedBuffer, expectedBuffer)
+  );
 }

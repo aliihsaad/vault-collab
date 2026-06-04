@@ -83,6 +83,7 @@ export const vaultCollabToolNames = [
   "vault_collab_deactivate_policy_pack",
   "vault_collab_evaluate_policy",
   "vault_collab_report_runtime_metrics",
+  "vault_collab_report_session",
   "vault_collab_detect_stalled_handoffs",
   "vault_collab_sweep_expired_handoffs",
   "vault_collab_claim_handoff",
@@ -660,6 +661,18 @@ const reportRuntimeMetricsInputSchema = ownedSessionInputSchema.extend({
   cost_threshold_usd: optionalNumberSchema("Snake_case alias for costThresholdUsd.")
 });
 
+const reportSessionInputSchema = z.object({
+  sessionUid: optionalStringSchema("Required if session_uid is omitted. Session identifier."),
+  session_uid: optionalStringSchema("Snake_case alias for sessionUid."),
+  sessionToken: optionalStringSchema("Owner token. Exactly one of sessionToken or adapterToken is required."),
+  session_token: optionalStringSchema("Snake_case alias for sessionToken."),
+  adapterToken: optionalStringSchema("Report-only HMAC adapter token. Exactly one of sessionToken or adapterToken is required."),
+  adapter_token: optionalStringSchema("Snake_case alias for adapterToken."),
+  snapshot: z
+    .record(z.unknown())
+    .describe("vault_collab.session.v1 snapshot to validate and store.")
+});
+
 const detectStalledHandoffsInputSchema = z.object({
   thresholdMs: optionalNumberSchema("Progress inactivity threshold in milliseconds."),
   threshold_ms: optionalNumberSchema("Snake_case alias for thresholdMs.")
@@ -1027,6 +1040,13 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     description:
       "Report token-safe context and cost metrics for a session and emit warning events when configured thresholds are reached.",
     inputSchema: reportRuntimeMetricsInputSchema
+  },
+  {
+    name: "vault_collab_report_session",
+    title: "Report Session",
+    description:
+      "Report a token-safe vault_collab.session.v1 HUD snapshot using either an owner token or a report-only HMAC adapter token.",
+    inputSchema: reportSessionInputSchema
   },
   {
     name: "vault_collab_detect_stalled_handoffs",
@@ -1580,6 +1600,13 @@ export function createVaultCollabMcpTools(
             optionalNumber(args, "costThresholdUsd", "cost_threshold_usd") ?? null
         }
       ),
+    vault_collab_report_session: (args) =>
+      sessions.reportSession({
+        sessionUid: requiredString(args, "sessionUid", "session_uid"),
+        sessionToken: optionalString(args, "sessionToken", "session_token") ?? null,
+        adapterToken: optionalString(args, "adapterToken", "adapter_token") ?? null,
+        snapshot: requiredRecord(args, "snapshot")
+      }),
     vault_collab_detect_stalled_handoffs: (args) => {
       const emittedEvents = handoffs.detectStalledHandoffs({
         thresholdMs: optionalNumber(args, "thresholdMs", "threshold_ms") ?? 10 * 60_000
@@ -1876,6 +1903,15 @@ function optionalRecord(args: Record<string, unknown>, ...keys: string[]): JsonR
 
   if (!isRecord(value)) {
     throw new Error(`Expected object: ${keys[0]}`);
+  }
+
+  return value;
+}
+
+function requiredRecord(args: Record<string, unknown>, ...keys: string[]): JsonRecord {
+  const value = optionalRecord(args, ...keys);
+  if (value === undefined) {
+    throw new Error(`Missing required object: ${keys[0]}`);
   }
 
   return value;

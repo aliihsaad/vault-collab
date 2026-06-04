@@ -364,6 +364,7 @@ export class AttentionService {
       "security_finding",
       "context_warning",
       "cost_warning",
+      "risk_critical",
       "loop_stall",
       "tool_failure",
       "launch_request",

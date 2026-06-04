@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -98,6 +99,78 @@ const discoveryTypedPayload = {
   }
 };
 
+const adapterSecret = "phase-7-adapter-secret";
+
+function validSessionSnapshot(
+  sessionUid: string,
+  workspacePath: string,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    schemaVersion: "vault_collab.session.v1",
+    adapterId: "codex-local:test",
+    sessionUid,
+    project: "Vault Collab",
+    workspace: {
+      path: workspacePath,
+      projectKey: "vault-collab"
+    },
+    state: "working",
+    context: {
+      model: "gpt-5-codex",
+      provider: "codex",
+      tokensUsed: 86000,
+      tokensRemaining: 14000,
+      compactionRisk: "medium"
+    },
+    active_handoffs: [
+      {
+        handoffUid: "vc_handoff_phase_7",
+        status: "in_progress",
+        progressNote: "Implementing report_session.",
+        claimedAt: "2026-06-04T09:52:45.000Z"
+      }
+    ],
+    progress: {
+      currentTask: "Implement Phase 7",
+      percentComplete: 40,
+      blockers: []
+    },
+    cost: {
+      estimatedUSD: 1.25,
+      tokensTotal: 100000
+    },
+    risk: {
+      level: "low",
+      reasons: []
+    },
+    tool_grants: [
+      {
+        toolName: "vault_collab_report_session",
+        scope: "coordination_write",
+        grantedAt: "2026-06-04T09:52:45.000Z"
+      }
+    ],
+    capabilities: {
+      canMutateHandoffs: false,
+      canPublishHandoffs: false,
+      canSendMessages: true,
+      adapterType: "adapter_backed"
+    },
+    sync_cursor: {
+      lastEventId: 5772,
+      lastHeartbeatAt: "2026-06-04T09:52:45.000Z"
+    },
+    ...overrides
+  };
+}
+
+function deriveAdapterToken(secret: string, sessionUid: string, adapterId: string): string {
+  return createHmac("sha256", secret)
+    .update(`${sessionUid}\0${adapterId}`)
+    .digest("base64url");
+}
+
 describe("Vault Collab MCP tools", () => {
   let dbPath: string;
   let cwd: string;
@@ -111,6 +184,7 @@ describe("Vault Collab MCP tools", () => {
   afterEach(() => {
     closeTools?.();
     closeTools = undefined;
+    vi.unstubAllEnvs();
     vi.useRealTimers();
   });
 
@@ -166,6 +240,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_deactivate_policy_pack",
       "vault_collab_evaluate_policy",
       "vault_collab_report_runtime_metrics",
+      "vault_collab_report_session",
       "vault_collab_detect_stalled_handoffs",
       "vault_collab_sweep_expired_handoffs",
       "vault_collab_claim_handoff",
@@ -1258,6 +1333,237 @@ describe("Vault Collab MCP tools", () => {
     });
     expect(JSON.stringify(report)).not.toContain(worker.sessionToken);
     expect(JSON.stringify(attention)).not.toContain(worker.sessionToken);
+  });
+
+  it("reports session snapshots with an owner token and routes critical risk attention", async () => {
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const worker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Snapshot Worker",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        role: "implementer"
+      })
+    );
+    const coordinator = structured<{ sessionUid: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Coordinator",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        role: "coordinator"
+      })
+    );
+    const runtime = structured<{ sessionUid: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Runtime Operator",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        role: "runtime-loop-operator"
+      })
+    );
+    const coordinatorCursor = structured<{ latestEventId: number }>(
+      await tools.callTool("vault_collab_get_session_attention", {
+        sessionUid: coordinator.sessionUid,
+        includeCurrentHandoffs: false
+      })
+    ).latestEventId;
+    const runtimeCursor = structured<{ latestEventId: number }>(
+      await tools.callTool("vault_collab_get_session_attention", {
+        sessionUid: runtime.sessionUid,
+        includeCurrentHandoffs: false
+      })
+    ).latestEventId;
+
+    const report = structured<{
+      session: {
+        sessionUid: string;
+        status: string;
+        adapterType: string;
+        snapshotReportedAt: string | null;
+        lastSnapshot: { state: string; risk: { level: string } } | null;
+      };
+      snapshot: { state: string; risk: { level: string } };
+      emittedEvents: Array<{ eventType: string; payload: Record<string, unknown> }>;
+    }>(
+      await tools.callTool("vault_collab_report_session", {
+        sessionUid: worker.sessionUid,
+        sessionToken: worker.sessionToken,
+        snapshot: validSessionSnapshot(worker.sessionUid, cwd, {
+          risk: {
+            level: "critical",
+            reasons: ["Adapter reports context exhaustion."]
+          }
+        })
+      })
+    );
+    const listed = structured<
+      Array<{
+        sessionUid: string;
+        status: string;
+        adapterType: string;
+        lastSnapshot: { state: string; risk: { level: string } } | null;
+        snapshotReportedAt: string | null;
+      }>
+    >(
+      await tools.callTool("vault_collab_list_sessions", {
+        project: "Vault Collab"
+      })
+    );
+    const snapshotEvents = structured<Array<{ eventType: string; payload: Record<string, unknown> }>>(
+      await tools.callTool("vault_collab_list_events", {
+        eventType: "session.snapshot_reported"
+      })
+    );
+    const coordinatorAttention = structured<{
+      items: Array<{ kind: string; event: { eventType: string; payload: Record<string, unknown> } }>;
+    }>(
+      await tools.callTool("vault_collab_get_session_attention", {
+        sessionUid: coordinator.sessionUid,
+        sinceEventId: coordinatorCursor,
+        includeCurrentHandoffs: false
+      })
+    );
+    const runtimeAttention = structured<{
+      items: Array<{ kind: string; event: { eventType: string; payload: Record<string, unknown> } }>;
+    }>(
+      await tools.callTool("vault_collab_get_session_attention", {
+        sessionUid: runtime.sessionUid,
+        sinceEventId: runtimeCursor,
+        includeCurrentHandoffs: false
+      })
+    );
+
+    expect(report.session).toMatchObject({
+      sessionUid: worker.sessionUid,
+      status: "idle",
+      adapterType: "adapter_backed",
+      lastSnapshot: {
+        state: "working",
+        risk: {
+          level: "critical"
+        }
+      }
+    });
+    expect(report.session.snapshotReportedAt).toEqual(expect.any(String));
+    expect(report.emittedEvents.map((event) => event.eventType)).toEqual([
+      "session.snapshot_reported",
+      "risk.critical_reported"
+    ]);
+    expect(snapshotEvents).toHaveLength(1);
+    expect(snapshotEvents[0].payload).toMatchObject({
+      schemaVersion: "vault_collab.session.v1",
+      adapterId: "codex-local:test",
+      adapterType: "adapter_backed",
+      state: "working",
+      riskLevel: "critical",
+      activeHandoffCount: 1,
+      progressPercent: 40
+    });
+    expect(snapshotEvents[0].payload).not.toHaveProperty("snapshot");
+    expect(listed.find((session) => session.sessionUid === worker.sessionUid)).toMatchObject({
+      status: "idle",
+      adapterType: "adapter_backed",
+      lastSnapshot: {
+        state: "working",
+        risk: {
+          level: "critical"
+        }
+      }
+    });
+    expect(coordinatorAttention.items).toEqual([
+      expect.objectContaining({
+        kind: "risk_critical",
+        event: expect.objectContaining({
+          eventType: "risk.critical_reported"
+        })
+      })
+    ]);
+    expect(runtimeAttention.items).toEqual([
+      expect.objectContaining({
+        kind: "risk_critical",
+        event: expect.objectContaining({
+          eventType: "risk.critical_reported"
+        })
+      })
+    ]);
+    expect(JSON.stringify(report)).not.toContain(worker.sessionToken);
+    expect(JSON.stringify(snapshotEvents)).not.toContain(worker.sessionToken);
+  });
+
+  it("accepts HMAC adapter tokens only for vault_collab_report_session", async () => {
+    vi.stubEnv("VAULT_COLLAB_ADAPTER_TOKEN_SECRET", adapterSecret);
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const worker = structured<{ sessionUid: string; sessionToken: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "Adapter Worker",
+        clientType: "codex",
+        project: "Vault Collab",
+        workspacePath: cwd,
+        role: "implementer"
+      })
+    );
+    const adapterToken = deriveAdapterToken(
+      adapterSecret,
+      worker.sessionUid,
+      "codex-local:test"
+    );
+
+    const keys = schemaKeys("vault_collab_report_session");
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        "sessionUid",
+        "session_uid",
+        "sessionToken",
+        "session_token",
+        "adapterToken",
+        "adapter_token",
+        "snapshot"
+      ])
+    );
+
+    const report = structured<{ session: { adapterType: string }; snapshot: { adapterId: string } }>(
+      await tools.callTool("vault_collab_report_session", {
+        sessionUid: worker.sessionUid,
+        adapterToken,
+        snapshot: validSessionSnapshot(worker.sessionUid, cwd)
+      })
+    );
+    const lifecycleAttempt = await tools.callTool("vault_collab_update_session_state", {
+      sessionUid: worker.sessionUid,
+      adapterToken,
+      status: "working"
+    });
+    const bothTokensAttempt = await tools.callTool("vault_collab_report_session", {
+      sessionUid: worker.sessionUid,
+      sessionToken: worker.sessionToken,
+      adapterToken,
+      snapshot: validSessionSnapshot(worker.sessionUid, cwd)
+    });
+
+    expect(report).toMatchObject({
+      session: {
+        adapterType: "adapter_backed"
+      },
+      snapshot: {
+        adapterId: "codex-local:test"
+      }
+    });
+    expect(lifecycleAttempt.isError).toBe(true);
+    expect(lifecycleAttempt.content[0]?.type === "text" ? lifecycleAttempt.content[0].text : "")
+      .toMatch(/sessionToken|owner token|required string/i);
+    expect(bothTokensAttempt.isError).toBe(true);
+    expect(bothTokensAttempt.content[0]?.type === "text" ? bothTokensAttempt.content[0].text : "")
+      .toMatch(/exactly one/i);
+    expect(JSON.stringify(report)).not.toContain(adapterToken);
+    expect(JSON.stringify(lifecycleAttempt)).not.toContain(adapterToken);
+    expect(JSON.stringify(bothTokensAttempt)).not.toContain(adapterToken);
   });
 
   it("renames and closes roster sessions through MCP without leaking tokens", async () => {

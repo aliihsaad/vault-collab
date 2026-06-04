@@ -11,6 +11,7 @@ export type EventNamespace =
   | "policy"
   | "context"
   | "cost"
+  | "risk"
   | "loop"
   | "launch_request"
   | "agent_profile";
@@ -47,13 +48,15 @@ const forbiddenPayloadKeys = [
   "claimToken",
   "claim_token",
   "actorSessionToken",
-  "actor_session_token"
+  "actor_session_token",
+  "adapterToken",
+  "adapter_token"
 ];
 
 const tokenSafety = {
   forbiddenPayloadKeys,
   rules: [
-    "Never include owner tokens, session tokens, or claim tokens in event payloads.",
+    "Never include owner tokens, session tokens, claim tokens, or adapter tokens in event payloads.",
     "Payloads may include stable UIDs, project labels, statuses, counts, thresholds, and redacted argument-key metadata.",
     "Tool events must never include raw arguments, raw results, or exception text that contains owner-token values."
   ]
@@ -143,6 +146,18 @@ export const eventTypeRegistry: EventTypeDefinition[] = [
   define("session.renamed", "session", "A session display name changed.", {
     previousDisplayName: "string",
     displayName: "string"
+  }, noAttention),
+  define("session.snapshot_reported", "session", "A session or adapter reported its latest HUD snapshot.", {
+    schemaVersion: "vault_collab.session.v1",
+    adapterId: "string",
+    adapterType: "native | adapter_backed | instruction_backed",
+    project: "string",
+    state: "string",
+    riskLevel: "low | medium | high | critical | unknown",
+    activeHandoffCount: "number",
+    progressPercent: "number | null",
+    snapshotReportedAt: "ISO timestamp",
+    payloadKeys: "string[]"
   }, noAttention),
 
   define("handoff.published", "handoff", "A handoff was published to an inbox.", {
@@ -316,6 +331,15 @@ export const eventTypeRegistry: EventTypeDefinition[] = [
     costUsd: "number",
     thresholdUsd: "number"
   }, roleAttention("cost_warning", ["coordinator", "runtime-loop-operator", "release-agent"])),
+  define("risk.critical_reported", "risk", "A session snapshot reported critical risk.", {
+    project: "string",
+    reportedSessionUid: "vc_sess_*",
+    adapterId: "string",
+    adapterType: "native | adapter_backed | instruction_backed",
+    riskLevel: "critical",
+    reasons: "string[]",
+    snapshotReportedAt: "ISO timestamp"
+  }, roleAttention("risk_critical", ["coordinator", "runtime-loop-operator"])),
   define("loop.stall_detected", "loop", "A claimed handoff has not received progress for the configured threshold.", {
     project: "string",
     handoffUid: "vc_handoff_*",
@@ -396,7 +420,8 @@ export function isForbiddenTokenKey(key: string): boolean {
     "sessiontoken",
     "ownertoken",
     "claimtoken",
-    "actorsessiontoken"
+    "actorsessiontoken",
+    "adaptertoken"
   ]).has(normalized);
 }
 

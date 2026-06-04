@@ -328,8 +328,15 @@ describe("Vault Collab schema migrations", () => {
       name: string;
     }>;
 
-    expect(sessionColumns.map((column) => column.name)).toContain("agent_uid");
-    expect(sessionColumns.map((column) => column.name)).toContain("role_profile_id");
+    expect(sessionColumns.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        "agent_uid",
+        "role_profile_id",
+        "last_snapshot_json",
+        "snapshot_reported_at",
+        "adapter_type"
+      ])
+    );
     expect(handoffColumns.map((column) => column.name)).toEqual(
       expect.arrayContaining([
         "queue_key",
@@ -390,9 +397,84 @@ describe("Vault Collab schema migrations", () => {
         "idx_role_label_routes_label",
         "idx_role_label_routes_unique_label_profile",
         "idx_handoff_templates_role",
-        "idx_handoff_templates_template_key"
+        "idx_handoff_templates_template_key",
+        "idx_sessions_adapter_type",
+        "idx_sessions_snapshot_reported_at"
       ])
     );
+  });
+
+  it("backfills Phase 7 session snapshot columns on legacy rows", () => {
+    db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE sessions (
+        session_uid TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        client_type TEXT NOT NULL,
+        project TEXT NOT NULL,
+        workspace_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        status_detail TEXT,
+        capabilities_json TEXT NOT NULL,
+        current_handoff_uid TEXT,
+        session_token TEXT NOT NULL,
+        last_heartbeat_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        disconnected_at TEXT
+      );
+
+      INSERT INTO sessions (
+        session_uid,
+        display_name,
+        client_type,
+        project,
+        workspace_path,
+        status,
+        status_detail,
+        capabilities_json,
+        current_handoff_uid,
+        session_token,
+        last_heartbeat_at,
+        created_at,
+        updated_at,
+        disconnected_at
+      )
+      VALUES (
+        'vc_sess_legacy_snapshot',
+        'Legacy session',
+        'codex',
+        'Vault Collab',
+        'C:\\workspace\\vault-collab',
+        'idle',
+        NULL,
+        '{}',
+        NULL,
+        'legacy-owner-token',
+        '2026-05-28T10:00:00.000Z',
+        '2026-05-28T10:00:00.000Z',
+        '2026-05-28T10:00:00.000Z',
+        NULL
+      );
+    `);
+
+    applySchema(db);
+
+    expect(
+      db
+        .prepare(
+          `
+          SELECT adapter_type, last_snapshot_json, snapshot_reported_at
+          FROM sessions
+          WHERE session_uid = 'vc_sess_legacy_snapshot'
+        `
+        )
+        .get()
+    ).toEqual({
+      adapter_type: "native",
+      last_snapshot_json: null,
+      snapshot_reported_at: null
+    });
   });
 
   it("backfills canonical role profile ids without rewriting legacy role labels", () => {

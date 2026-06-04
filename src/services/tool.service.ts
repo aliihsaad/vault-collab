@@ -25,6 +25,7 @@ const ownerTokenToolNames = new Set([
   "vault_collab_create_handoff_discussion_thread",
   "vault_collab_add_discussion_message",
   "vault_collab_report_runtime_metrics",
+  "vault_collab_report_session",
   "vault_collab_claim_handoff",
   "vault_collab_update_handoff",
   "vault_collab_request_user_confirmation",
@@ -46,6 +47,13 @@ export class ToolService {
       return;
     }
 
+    const hasSessionToken =
+      firstStringArg(args, "sessionToken", "session_token", "actorSessionToken", "actor_session_token") !==
+      null;
+    const hasAdapterToken = firstStringArg(args, "adapterToken", "adapter_token") !== null;
+    const isAdapterReportCall =
+      toolName === "vault_collab_report_session" && hasAdapterToken && !hasSessionToken;
+
     this.policyEngine.enforce({
       actionType: "tool.execute",
       payload: {
@@ -60,10 +68,10 @@ export class ToolService {
         project:
           firstStringArg(args, "project", "targetProject", "target_project", "sourceProject", "source_project") ??
           null,
-        requiresOwnerToken: ownerTokenToolNames.has(toolName),
-        hasSessionToken:
-          firstStringArg(args, "sessionToken", "session_token", "actorSessionToken", "actor_session_token") !==
-          null,
+        requiresOwnerToken: ownerTokenToolNames.has(toolName) && !isAdapterReportCall,
+        requiresAdapterToken: toolName === "vault_collab_report_session" && hasAdapterToken,
+        hasSessionToken,
+        hasAdapterToken,
         sensitiveAction: sensitiveActionForTool(toolName),
         argumentKeys: Object.keys(args)
       } satisfies JsonRecord

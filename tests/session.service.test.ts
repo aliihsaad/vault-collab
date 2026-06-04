@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCollabDatabase, type CollabDatabase } from "../src/database/connection.js";
 import { AgentProfileService } from "../src/services/agent-profile.service.js";
 import { EventService } from "../src/services/event.service.js";
@@ -7,6 +8,76 @@ import { LaunchRequestService } from "../src/services/launch-request.service.js"
 import { SessionService } from "../src/services/session.service.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
+const adapterSecret = "phase-7-adapter-secret";
+
+function validSessionSnapshot(
+  sessionUid: string,
+  overrides: Record<string, unknown> = {}
+): Record<string, unknown> {
+  return {
+    schemaVersion: "vault_collab.session.v1",
+    adapterId: "codex-local:test",
+    sessionUid,
+    project: "Vault Collab",
+    workspace: {
+      path: workspacePath,
+      projectKey: "vault-collab"
+    },
+    state: "working",
+    context: {
+      model: "gpt-5-codex",
+      provider: "codex",
+      tokensUsed: 86000,
+      tokensRemaining: 14000,
+      compactionRisk: "medium"
+    },
+    active_handoffs: [
+      {
+        handoffUid: "vc_handoff_phase_7",
+        status: "in_progress",
+        progressNote: "Implementing report_session.",
+        claimedAt: "2026-06-04T09:52:45.000Z"
+      }
+    ],
+    progress: {
+      currentTask: "Implement Phase 7",
+      percentComplete: 40,
+      blockers: []
+    },
+    cost: {
+      estimatedUSD: 1.25,
+      tokensTotal: 100000
+    },
+    risk: {
+      level: "low",
+      reasons: []
+    },
+    tool_grants: [
+      {
+        toolName: "vault_collab_report_session",
+        scope: "coordination_write",
+        grantedAt: "2026-06-04T09:52:45.000Z"
+      }
+    ],
+    capabilities: {
+      canMutateHandoffs: false,
+      canPublishHandoffs: false,
+      canSendMessages: true,
+      adapterType: "adapter_backed"
+    },
+    sync_cursor: {
+      lastEventId: 5772,
+      lastHeartbeatAt: "2026-06-04T09:52:45.000Z"
+    },
+    ...overrides
+  };
+}
+
+function deriveAdapterToken(secret: string, sessionUid: string, adapterId: string): string {
+  return createHmac("sha256", secret)
+    .update(`${sessionUid}\0${adapterId}`)
+    .digest("base64url");
+}
 
 describe("SessionService", () => {
   let db: CollabDatabase;
@@ -28,6 +99,7 @@ describe("SessionService", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     db.close();
   });
 
@@ -52,6 +124,11 @@ describe("SessionService", () => {
     });
     expect(registered.createdAt).toBe("2026-05-28T10:00:00.000Z");
     expect(registered.lastHeartbeatAt).toBe("2026-05-28T10:00:00.000Z");
+    expect(registered).toMatchObject({
+      adapterType: "native",
+      lastSnapshot: null,
+      snapshotReportedAt: null
+    });
 
     const sessions = service.listSessions();
 
@@ -70,6 +147,11 @@ describe("SessionService", () => {
         maxConcurrentHandoffs: 1
       },
       disconnectedAt: null
+    });
+    expect(sessions[0]).toMatchObject({
+      adapterType: "native",
+      lastSnapshot: null,
+      snapshotReportedAt: null
     });
     expect(sessions[0]).not.toHaveProperty("sessionToken");
   });
@@ -638,6 +720,192 @@ describe("SessionService", () => {
       }
     });
     expect(JSON.stringify(report)).not.toContain(registered.sessionToken);
+  });
+
+  it("stores a session snapshot without changing canonical lifecycle state", () => {
+    const registered = service.registerSession({
+      displayName: "Snapshot worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    service.updateSessionState(
+      registered.sessionUid,
+      registered.sessionToken,
+      "blocked",
+      "Canonical lifecycle remains blocked."
+    );
+    now = new Date("2026-05-28T10:01:55.000Z");
+
+    const report = service.reportSession({
+      sessionUid: registered.sessionUid,
+      sessionToken: registered.sessionToken,
+      snapshot: validSessionSnapshot(registered.sessionUid)
+    });
+
+    expect(report.session).toMatchObject({
+      sessionUid: registered.sessionUid,
+      status: "blocked",
+      statusDetail: "Canonical lifecycle remains blocked.",
+      adapterType: "adapter_backed",
+      snapshotReportedAt: "2026-05-28T10:01:55.000Z",
+      lastHeartbeatAt: "2026-05-28T10:01:55.000Z",
+      lastSnapshot: {
+        state: "working",
+        progress: {
+          currentTask: "Implement Phase 7",
+          percentComplete: 40
+        }
+      }
+    });
+    expect(report.snapshot).toMatchObject({
+      sessionUid: registered.sessionUid,
+      capabilities: {
+        adapterType: "adapter_backed"
+      }
+    });
+    expect(report.emittedEvents.map((event) => event.eventType)).toEqual([
+      "session.snapshot_reported"
+    ]);
+    expect(report.emittedEvents[0].payload).toMatchObject({
+      schemaVersion: "vault_collab.session.v1",
+      adapterId: "codex-local:test",
+      adapterType: "adapter_backed",
+      project: "Vault Collab",
+      state: "working",
+      riskLevel: "low",
+      activeHandoffCount: 1,
+      progressPercent: 40,
+      snapshotReportedAt: "2026-05-28T10:01:55.000Z",
+      payloadKeys: expect.arrayContaining(["schemaVersion", "adapterId", "risk"])
+    });
+    expect(report.emittedEvents[0].payload).not.toHaveProperty("snapshot");
+    expect(JSON.stringify(report)).not.toContain(registered.sessionToken);
+
+    const row = db
+      .prepare(
+        `
+        SELECT adapter_type, snapshot_reported_at, last_snapshot_json
+        FROM sessions
+        WHERE session_uid = ?
+      `
+      )
+      .get(registered.sessionUid) as {
+      adapter_type: string;
+      snapshot_reported_at: string;
+      last_snapshot_json: string;
+    };
+
+    expect(row.adapter_type).toBe("adapter_backed");
+    expect(row.snapshot_reported_at).toBe("2026-05-28T10:01:55.000Z");
+    expect(JSON.parse(row.last_snapshot_json)).toMatchObject({
+      sessionUid: registered.sessionUid,
+      state: "working"
+    });
+  });
+
+  it("accepts HMAC adapter tokens only for reportSession", () => {
+    vi.stubEnv("VAULT_COLLAB_ADAPTER_TOKEN_SECRET", adapterSecret);
+    const registered = service.registerSession({
+      displayName: "Adapter backed worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const snapshot = validSessionSnapshot(registered.sessionUid);
+    const token = deriveAdapterToken(adapterSecret, registered.sessionUid, "codex-local:test");
+    now = new Date("2026-05-28T10:01:56.000Z");
+
+    const report = service.reportSession({
+      sessionUid: registered.sessionUid,
+      adapterToken: token,
+      snapshot
+    });
+
+    expect(report.session).toMatchObject({
+      adapterType: "adapter_backed",
+      snapshotReportedAt: "2026-05-28T10:01:56.000Z"
+    });
+    expect(() =>
+      service.reportSession({
+        sessionUid: registered.sessionUid,
+        adapterToken: "wrong-token",
+        snapshot
+      })
+    ).toThrow(/invalid adapter token/i);
+    expect(() =>
+      service.updateSessionState(registered.sessionUid, token, "working", "must not work")
+    ).toThrow(/invalid session token/i);
+    expect(JSON.stringify(report)).not.toContain(token);
+  });
+
+  it("normalizes instruction-backed mutation hints to false", () => {
+    const registered = service.registerSession({
+      displayName: "Instruction backed worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+
+    const report = service.reportSession({
+      sessionUid: registered.sessionUid,
+      sessionToken: registered.sessionToken,
+      snapshot: validSessionSnapshot(registered.sessionUid, {
+        adapterId: "tmux:pane-1",
+        capabilities: {
+          canMutateHandoffs: true,
+          canPublishHandoffs: true,
+          canSendMessages: true,
+          adapterType: "instruction_backed"
+        }
+      })
+    });
+
+    expect(report.snapshot.capabilities).toEqual({
+      canMutateHandoffs: false,
+      canPublishHandoffs: false,
+      canSendMessages: false,
+      adapterType: "instruction_backed"
+    });
+    expect(report.session.lastSnapshot?.capabilities).toEqual(report.snapshot.capabilities);
+  });
+
+  it("emits a separate critical risk attention event", () => {
+    const registered = service.registerSession({
+      displayName: "Risk reporter",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+
+    const report = service.reportSession({
+      sessionUid: registered.sessionUid,
+      sessionToken: registered.sessionToken,
+      snapshot: validSessionSnapshot(registered.sessionUid, {
+        risk: {
+          level: "critical",
+          reasons: ["Context compaction is imminent."]
+        }
+      })
+    });
+
+    expect(report.emittedEvents.map((event) => event.eventType)).toEqual([
+      "session.snapshot_reported",
+      "risk.critical_reported"
+    ]);
+    expect(report.emittedEvents[1].payload).toMatchObject({
+      project: "Vault Collab",
+      adapterId: "codex-local:test",
+      adapterType: "adapter_backed",
+      riskLevel: "critical",
+      reasons: ["Context compaction is imminent."]
+    });
+    expect(report.emittedEvents[1].payload).not.toHaveProperty("snapshot");
+    expect(JSON.stringify(report.emittedEvents)).not.toContain(registered.sessionToken);
   });
 
   it("disconnects sessions without deleting them", () => {

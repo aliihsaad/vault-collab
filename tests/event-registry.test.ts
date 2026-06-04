@@ -17,6 +17,7 @@ const requiredNamespaces = [
   "policy",
   "context",
   "cost",
+  "risk",
   "loop"
 ];
 
@@ -85,12 +86,36 @@ describe("event type registry", () => {
         roleProfileIds: ["coordinator", "runtime-loop-operator"]
       }
     });
+    expect(getEventTypeDefinition("session.snapshot_reported")).toMatchObject({
+      canonicalName: "session.snapshot_reported",
+      namespace: "session",
+      attention: {
+        scope: "none",
+        itemKind: null,
+        roleProfileIds: []
+      }
+    });
+    expect(getEventTypeDefinition("risk.critical_reported")).toMatchObject({
+      canonicalName: "risk.critical_reported",
+      namespace: "risk",
+      attention: {
+        itemKind: "risk_critical",
+        roleProfileIds: ["coordinator", "runtime-loop-operator"]
+      }
+    });
 
     for (const definition of eventTypeRegistry) {
       expect(definition.canonicalName).toMatch(/^[a-z_]+\.[a-z0-9_]+$/);
       expect(definition.payloadShape).not.toEqual({});
       expect(definition.tokenSafety.forbiddenPayloadKeys).toEqual(
-        expect.arrayContaining(["sessionToken", "session_token", "ownerToken", "claimToken"])
+        expect.arrayContaining([
+          "sessionToken",
+          "session_token",
+          "ownerToken",
+          "claimToken",
+          "adapterToken",
+          "adapter_token"
+        ])
       );
       expect(definition.tokenSafety.rules.join("\n")).toMatch(/owner tokens/i);
     }
@@ -113,6 +138,14 @@ describe("event type registry", () => {
         }
       })
     ).toThrow(/claim_token/i);
+
+    expect(() =>
+      assertTokenSafePayload({
+        adapter: {
+          adapterToken: "must-not-leak"
+        }
+      })
+    ).toThrow(/adapterToken/i);
 
     expect(() =>
       assertTokenSafePayload({

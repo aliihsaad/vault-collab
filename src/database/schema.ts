@@ -29,6 +29,9 @@ export function applySchema(db: Database.Database): void {
       delivery_wakeable INTEGER NOT NULL DEFAULT 0,
       delivery_last_ack_event_id INTEGER,
       delivery_last_ack_at TEXT,
+      last_snapshot_json TEXT,
+      snapshot_reported_at TEXT,
+      adapter_type TEXT NOT NULL DEFAULT 'native',
       session_token TEXT NOT NULL,
       last_heartbeat_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -338,6 +341,9 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "sessions", "delivery_wakeable", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "sessions", "delivery_last_ack_event_id", "INTEGER");
   addColumnIfMissing(db, "sessions", "delivery_last_ack_at", "TEXT");
+  addColumnIfMissing(db, "sessions", "last_snapshot_json", "TEXT");
+  addColumnIfMissing(db, "sessions", "snapshot_reported_at", "TEXT");
+  addColumnIfMissing(db, "sessions", "adapter_type", "TEXT NOT NULL DEFAULT 'native'");
   addColumnIfMissing(db, "agent_profiles", "project_key", "TEXT");
   addColumnIfMissing(db, "agent_profiles", "role_profile_id", "TEXT");
   addColumnIfMissing(
@@ -370,6 +376,8 @@ export function applySchema(db: Database.Database): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sessions_project_key ON sessions(project_key);
     CREATE INDEX IF NOT EXISTS idx_sessions_agent_uid ON sessions(agent_uid);
+    CREATE INDEX IF NOT EXISTS idx_sessions_adapter_type ON sessions(adapter_type);
+    CREATE INDEX IF NOT EXISTS idx_sessions_snapshot_reported_at ON sessions(snapshot_reported_at);
     CREATE INDEX IF NOT EXISTS idx_agent_profiles_project_key ON agent_profiles(project_key);
     CREATE INDEX IF NOT EXISTS idx_handoffs_target_project_key ON handoffs(target_project_key);
     CREATE INDEX IF NOT EXISTS idx_handoffs_source_project_key ON handoffs(source_project_key);

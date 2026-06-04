@@ -16,6 +16,25 @@ export type SessionStatus =
   | "complete"
   | "disconnected";
 
+export const SessionAdapterType = {
+  Native: "native",
+  AdapterBacked: "adapter_backed",
+  InstructionBacked: "instruction_backed"
+} as const;
+
+export type SessionAdapterType =
+  (typeof SessionAdapterType)[keyof typeof SessionAdapterType];
+
+export const sessionAdapterTypes = [
+  SessionAdapterType.Native,
+  SessionAdapterType.AdapterBacked,
+  SessionAdapterType.InstructionBacked
+] as const;
+
+export type SessionSnapshotState = SessionStatus | "unknown";
+export type SessionSnapshotRiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
+export type SessionSnapshotCompactionRisk = SessionSnapshotRiskLevel;
+
 export type JsonRecord = Record<string, unknown>;
 
 export type SecurityFindingSeverity = "low" | "medium" | "high" | "critical";
@@ -292,6 +311,9 @@ export interface SessionSnapshot {
   agentRole: string | null;
   currentHandoffUid: string | null;
   delivery: SessionDeliveryState;
+  adapterType: SessionAdapterType;
+  lastSnapshot: VaultCollabSessionSnapshotV1 | null;
+  snapshotReportedAt: string | null;
   lastHeartbeatAt: string;
   createdAt: string;
   updatedAt: string;
@@ -339,6 +361,90 @@ export interface RuntimeMetricsInput {
   costThresholdUsd?: number | null;
 }
 
+export interface VaultCollabSessionSnapshotWorkspaceV1 {
+  path: string;
+  projectKey?: string | null;
+}
+
+export interface VaultCollabSessionSnapshotContextV1 {
+  model: string | null;
+  provider: string | null;
+  tokensUsed: number | null;
+  tokensRemaining: number | null;
+  compactionRisk: SessionSnapshotCompactionRisk;
+}
+
+export interface VaultCollabSessionSnapshotHandoffV1 {
+  handoffUid: string;
+  status: HandoffStatus | "unknown";
+  progressNote: string | null;
+  claimedAt: string | null;
+}
+
+export interface VaultCollabSessionSnapshotProgressV1 {
+  currentTask: string | null;
+  percentComplete: number | null;
+  blockers: string[];
+}
+
+export interface VaultCollabSessionSnapshotCostV1 {
+  estimatedUSD: number | null;
+  tokensTotal: number | null;
+}
+
+export interface VaultCollabSessionSnapshotRiskV1 {
+  level: SessionSnapshotRiskLevel;
+  reasons: string[];
+}
+
+export interface VaultCollabSessionSnapshotToolGrantV1 {
+  toolName: string;
+  scope: string;
+  grantedAt: string | null;
+}
+
+export interface VaultCollabSessionSnapshotCapabilitiesV1 {
+  canMutateHandoffs: boolean;
+  canPublishHandoffs: boolean;
+  canSendMessages: boolean;
+  adapterType: SessionAdapterType;
+}
+
+export interface VaultCollabSessionSnapshotSyncCursorV1 {
+  lastEventId: number | null;
+  lastHeartbeatAt: string | null;
+}
+
+export interface VaultCollabSessionSnapshotV1 {
+  schemaVersion: "vault_collab.session.v1";
+  adapterId: string;
+  sessionUid: string;
+  project: string;
+  workspace: VaultCollabSessionSnapshotWorkspaceV1;
+  state: SessionSnapshotState;
+  context: VaultCollabSessionSnapshotContextV1;
+  active_handoffs: VaultCollabSessionSnapshotHandoffV1[];
+  progress: VaultCollabSessionSnapshotProgressV1;
+  cost: VaultCollabSessionSnapshotCostV1;
+  risk: VaultCollabSessionSnapshotRiskV1;
+  tool_grants: VaultCollabSessionSnapshotToolGrantV1[];
+  capabilities: VaultCollabSessionSnapshotCapabilitiesV1;
+  sync_cursor: VaultCollabSessionSnapshotSyncCursorV1;
+}
+
+export interface ReportSessionInput {
+  sessionUid: string;
+  sessionToken?: string | null;
+  adapterToken?: string | null;
+  snapshot: unknown;
+}
+
+export interface ReportSessionResult {
+  session: SessionSnapshot;
+  snapshot: VaultCollabSessionSnapshotV1;
+  emittedEvents: EventRecord[];
+}
+
 export interface EventRecord {
   eventId: number;
   handoffUid: string | null;
@@ -359,6 +465,7 @@ export type AttentionItemKind =
   | "security_finding"
   | "context_warning"
   | "cost_warning"
+  | "risk_critical"
   | "loop_stall"
   | "suggested_handoff"
   | "claimed_handoff"
