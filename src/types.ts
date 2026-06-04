@@ -331,6 +331,17 @@ export interface SessionFilters {
   status?: SessionStatus;
 }
 
+export type SessionCleanupStatus = Extract<SessionStatus, "complete" | "disconnected">;
+
+export interface SessionCleanupResult {
+  actorSessionUid: string;
+  statuses: SessionCleanupStatus[];
+  deletedSessionUids: string[];
+  deletedSessionCount: number;
+  deletedCursorCount: number;
+  deletedDeliveryAttemptCount: number;
+}
+
 export interface PingSessionInput {
   actorSessionUid?: string | null;
   message?: string | null;

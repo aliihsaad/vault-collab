@@ -46,6 +46,7 @@ export const vaultCollabToolNames = [
   "vault_collab_list_attention_delivery_attempts",
   "vault_collab_rename_session",
   "vault_collab_close_session",
+  "vault_collab_cleanup_sessions",
   "vault_collab_disconnect_session",
   "vault_collab_create_launch_request",
   "vault_collab_list_launch_requests",
@@ -344,6 +345,13 @@ const closeSessionInputSchema = z.object({
   actorSessionToken: optionalStringSchema("Required if actor_session_token is omitted. Acting session owner token."),
   actor_session_token: optionalStringSchema("Snake_case alias for actorSessionToken."),
   reason: optionalStringSchema("Optional roster close reason.")
+});
+
+const cleanupSessionsInputSchema = z.object({
+  actorSessionUid: optionalStringSchema("Required if actor_session_uid is omitted. Acting session identifier."),
+  actor_session_uid: optionalStringSchema("Snake_case alias for actorSessionUid."),
+  actorSessionToken: optionalStringSchema("Required if actor_session_token is omitted. Acting session owner token."),
+  actor_session_token: optionalStringSchema("Snake_case alias for actorSessionToken.")
 });
 
 const listSessionsInputSchema = z.object({
@@ -809,6 +817,13 @@ export const vaultCollabToolDefinitions: VaultCollabToolDefinition[] = [
     inputSchema: closeSessionInputSchema
   },
   {
+    name: "vault_collab_cleanup_sessions",
+    title: "Cleanup Sessions",
+    description:
+      "Remove complete and disconnected roster session records as a sessionAdmin/admin actor after first marking stale leases disconnected.",
+    inputSchema: cleanupSessionsInputSchema
+  },
+  {
     name: "vault_collab_disconnect_session",
     title: "Disconnect Session",
     description: "Mark a session disconnected without deleting its record.",
@@ -1268,6 +1283,11 @@ export function createVaultCollabMcpTools(
         requiredString(args, "actorSessionUid", "actor_session_uid"),
         requiredString(args, "actorSessionToken", "actor_session_token"),
         optionalString(args, "reason") ?? null
+      ),
+    vault_collab_cleanup_sessions: (args) =>
+      sessions.cleanupSessions(
+        requiredString(args, "actorSessionUid", "actor_session_uid"),
+        requiredString(args, "actorSessionToken", "actor_session_token")
       ),
     vault_collab_disconnect_session: (args) => {
       const sessionUid = requiredString(args, "sessionUid", "session_uid");

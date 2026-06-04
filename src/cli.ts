@@ -100,6 +100,7 @@ const commands = new Set([
   "session-permission-request",
   "session-rename",
   "session-close",
+  "session-cleanup",
   "disconnect",
   "launch-create",
   "launches",
@@ -293,6 +294,12 @@ async function execute(parsed: ParsedCommand, services: Services): Promise<unkno
         requiredOption(parsed, "actor-session-uid"),
         requiredOption(parsed, "actor-session-token"),
         optionalOption(parsed, "reason") ?? null
+      );
+
+    case "session-cleanup":
+      return services.sessions.cleanupSessions(
+        requiredOption(parsed, "actor-session-uid"),
+        requiredOption(parsed, "actor-session-token")
       );
 
     case "disconnect":

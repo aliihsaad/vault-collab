@@ -143,6 +143,14 @@ export const eventTypeRegistry: EventTypeDefinition[] = [
     actorSessionUid: "vc_sess_* | null",
     reason: "string | null"
   }, noAttention),
+  define("session.cleanup", "session", "Inactive session records were removed from the roster.", {
+    actorSessionUid: "vc_sess_*",
+    statuses: "SessionStatus[]",
+    deletedSessionUids: "vc_sess_*[]",
+    deletedSessionCount: "number",
+    deletedCursorCount: "number",
+    deletedDeliveryAttemptCount: "number"
+  }, noAttention),
   define("session.renamed", "session", "A session display name changed.", {
     previousDisplayName: "string",
     displayName: "string"

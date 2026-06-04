@@ -188,7 +188,7 @@ describe("Vault Collab MCP tools", () => {
     vi.useRealTimers();
   });
 
-  it("exposes the neutral tool names without destructive or role-based commands", () => {
+  it("exposes the neutral tool names without raw-delete or role-based commands", () => {
     expect(vaultCollabToolNames).toEqual([
       "vault_collab_get_agent_guide",
       "vault_collab_register_session",
@@ -203,6 +203,7 @@ describe("Vault Collab MCP tools", () => {
       "vault_collab_list_attention_delivery_attempts",
       "vault_collab_rename_session",
       "vault_collab_close_session",
+      "vault_collab_cleanup_sessions",
       "vault_collab_disconnect_session",
       "vault_collab_create_launch_request",
       "vault_collab_list_launch_requests",
@@ -254,7 +255,7 @@ describe("Vault Collab MCP tools", () => {
     ]);
     expect(
       vaultCollabToolNames.some((name) =>
-        /clean|delete|manager|worker|inspector|auto_claim|auto_execute|assign|interrupt|run_handoff|execute_handoff/i.test(
+        /delete|manager|worker|inspector|auto_claim|auto_execute|assign|interrupt|run_handoff|execute_handoff/i.test(
           name
         )
       )
@@ -354,9 +355,21 @@ describe("Vault Collab MCP tools", () => {
         "security.finding",
         "context.limit_warning",
         "cost.threshold_warning",
+        "session.cleanup",
         "loop.stall_detected"
       ])
     );
+    expect(definitions.find((definition) => definition.canonicalName === "session.cleanup"))
+      .toMatchObject({
+        namespace: "session",
+        payloadShape: {
+          deletedSessionCount: "number"
+        },
+        attention: {
+          itemKind: null,
+          roleProfileIds: []
+        }
+      });
     expect(definitions.find((definition) => definition.canonicalName === "loop.stall_detected"))
       .toMatchObject({
         namespace: "loop",
@@ -1566,7 +1579,7 @@ describe("Vault Collab MCP tools", () => {
     expect(JSON.stringify(bothTokensAttempt)).not.toContain(adapterToken);
   });
 
-  it("renames and closes roster sessions through MCP without leaking tokens", async () => {
+  it("renames, closes, and cleans up roster sessions through MCP without leaking tokens", async () => {
     const tools = createVaultCollabMcpTools({ dbPath });
     closeTools = tools.close;
 
@@ -1605,6 +1618,16 @@ describe("Vault Collab MCP tools", () => {
         reason: "Closed from dashboard roster"
       })
     );
+    const cleanup = structured<{
+      deletedSessionCount: number;
+      deletedSessionUids: string[];
+      sessionToken?: string;
+    }>(
+      await tools.callTool("vault_collab_cleanup_sessions", {
+        actorSessionUid: admin.sessionUid,
+        actorSessionToken: admin.sessionToken
+      })
+    );
 
     expect(renamed).toMatchObject({
       displayName: "Codex Receiver - terminal 2"
@@ -1613,10 +1636,15 @@ describe("Vault Collab MCP tools", () => {
       status: "disconnected",
       statusDetail: "Closed from dashboard roster"
     });
+    expect(cleanup).toMatchObject({
+      deletedSessionCount: 1,
+      deletedSessionUids: [worker.sessionUid]
+    });
     expect(renamed).not.toHaveProperty("sessionToken");
     expect(closed).not.toHaveProperty("sessionToken");
-    expect(JSON.stringify({ renamed, closed })).not.toContain(worker.sessionToken);
-    expect(JSON.stringify({ renamed, closed })).not.toContain(admin.sessionToken);
+    expect(cleanup).not.toHaveProperty("sessionToken");
+    expect(JSON.stringify({ renamed, closed, cleanup })).not.toContain(worker.sessionToken);
+    expect(JSON.stringify({ renamed, closed, cleanup })).not.toContain(admin.sessionToken);
   });
 
   it("lists attention delivery attempts through MCP without leaking tokens", async () => {

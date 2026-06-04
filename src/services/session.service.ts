@@ -21,6 +21,8 @@ import type {
   ReportSessionInput,
   ReportSessionResult,
   RuntimeMetricsInput,
+  SessionCleanupResult,
+  SessionCleanupStatus,
   SessionAdapterType,
   SessionDeliveryMode,
   SessionFilters,
@@ -83,6 +85,7 @@ const leasedHandoffStatuses = [
   "awaiting_user",
   "verification_needed"
 ] as const;
+const cleanupSessionStatuses = ["complete", "disconnected"] as const satisfies readonly SessionCleanupStatus[];
 const canonicalRoleProfileIds = new Set<string>(coreRoleProfileIds);
 const validRoleProfileIdMessage = coreRoleProfileIds.join(", ");
 
@@ -688,6 +691,120 @@ export class SessionService {
     disconnect();
 
     return this.requirePublicSession(targetSessionUid);
+  }
+
+  cleanupSessions(
+    actorSessionUid: string,
+    actorSessionToken: string,
+    statuses: SessionCleanupStatus[] = [...cleanupSessionStatuses]
+  ): SessionCleanupResult {
+    const actor = this.assertOwnedSession(actorSessionUid, actorSessionToken);
+    if (!this.hasCapability(actor, "sessionAdmin")) {
+      throw new Error("Session cleanup requires session admin capability");
+    }
+
+    const statusesToCleanup = Array.from(new Set(statuses));
+    if (statusesToCleanup.length === 0) {
+      throw new Error("Session cleanup requires at least one status");
+    }
+
+    for (const status of statusesToCleanup) {
+      if (!cleanupSessionStatuses.includes(status)) {
+        throw new Error("Session cleanup only supports complete and disconnected statuses");
+      }
+    }
+
+    this.disconnectStaleSessions();
+
+    const statusPlaceholders = statusesToCleanup.map(() => "?").join(", ");
+    const targets = this.db
+      .prepare(
+        `
+        SELECT session_uid
+        FROM sessions
+        WHERE session_uid <> ?
+          AND status IN (${statusPlaceholders})
+        ORDER BY updated_at ASC, session_uid ASC
+      `
+      )
+      .all(actorSessionUid, ...statusesToCleanup) as Array<{ session_uid: string }>;
+
+    const deletedSessionUids = targets.map((target) => target.session_uid);
+    if (deletedSessionUids.length === 0) {
+      return {
+        actorSessionUid,
+        statuses: statusesToCleanup,
+        deletedSessionUids,
+        deletedSessionCount: 0,
+        deletedCursorCount: 0,
+        deletedDeliveryAttemptCount: 0
+      };
+    }
+
+    const now = this.now();
+    const targetPlaceholders = deletedSessionUids.map(() => "?").join(", ");
+    let deletedCursorCount = 0;
+    let deletedDeliveryAttemptCount = 0;
+    let deletedSessionCount = 0;
+
+    const cleanup = this.db.transaction(() => {
+      for (const sessionUid of deletedSessionUids) {
+        this.expireClaimedHandoffLeases(sessionUid, now);
+        this.launchRequests.stopLaunchRequestsForSession(
+          sessionUid,
+          "Inactive session cleanup.",
+          now
+        );
+      }
+
+      deletedCursorCount = this.db
+        .prepare(
+          `
+          DELETE FROM session_attention_cursors
+          WHERE session_uid IN (${targetPlaceholders})
+        `
+        )
+        .run(...deletedSessionUids).changes;
+      deletedDeliveryAttemptCount = this.db
+        .prepare(
+          `
+          DELETE FROM attention_delivery_attempts
+          WHERE session_uid IN (${targetPlaceholders})
+        `
+        )
+        .run(...deletedSessionUids).changes;
+      deletedSessionCount = this.db
+        .prepare(
+          `
+          DELETE FROM sessions
+          WHERE session_uid IN (${targetPlaceholders})
+        `
+        )
+        .run(...deletedSessionUids).changes;
+
+      this.events.recordEvent({
+        eventType: "session.cleanup",
+        sessionUid: actorSessionUid,
+        payload: {
+          actorSessionUid,
+          statuses: statusesToCleanup,
+          deletedSessionUids,
+          deletedSessionCount,
+          deletedCursorCount,
+          deletedDeliveryAttemptCount
+        }
+      });
+    });
+    cleanup();
+
+    return {
+      actorSessionUid,
+      statuses: statusesToCleanup,
+      deletedSessionUids,
+      deletedSessionCount,
+      deletedCursorCount,
+      deletedDeliveryAttemptCount
+    };
   }
 
   listSessions(filter: SessionFilters = {}): SessionSnapshot[] {

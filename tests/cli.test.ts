@@ -736,6 +736,21 @@ describe("vault-collab CLI", () => {
         "Closed from dashboard roster"
       ])
     );
+    const cleanup = parseJson<{
+      deletedSessionCount: number;
+      deletedSessionUids: string[];
+      sessionToken?: string;
+    }>(
+      await runCli([
+        "session-cleanup",
+        "--db",
+        dbPath,
+        "--actor-session-uid",
+        admin.sessionUid,
+        "--actor-session-token",
+        admin.sessionToken
+      ])
+    );
 
     expect(renamed).toMatchObject({
       displayName: "Codex Receiver - terminal 2"
@@ -744,10 +759,15 @@ describe("vault-collab CLI", () => {
       status: "disconnected",
       statusDetail: "Closed from dashboard roster"
     });
+    expect(cleanup).toMatchObject({
+      deletedSessionCount: 1,
+      deletedSessionUids: [worker.sessionUid]
+    });
     expect(renamed).not.toHaveProperty("sessionToken");
     expect(closed).not.toHaveProperty("sessionToken");
-    expect(JSON.stringify({ renamed, closed })).not.toContain(worker.sessionToken);
-    expect(JSON.stringify({ renamed, closed })).not.toContain(admin.sessionToken);
+    expect(cleanup).not.toHaveProperty("sessionToken");
+    expect(JSON.stringify({ renamed, closed, cleanup })).not.toContain(worker.sessionToken);
+    expect(JSON.stringify({ renamed, closed, cleanup })).not.toContain(admin.sessionToken);
   });
 
   it("records session pings and permission-needed events through the CLI", async () => {

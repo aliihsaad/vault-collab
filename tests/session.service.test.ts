@@ -1104,6 +1104,197 @@ describe("SessionService", () => {
     expect(JSON.stringify(closed)).not.toContain(coordinator.sessionToken);
   });
 
+  it("lets a session admin purge complete, disconnected, and stale roster ghosts", () => {
+    const admin = service.registerSession({
+      displayName: "Dashboard Admin",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {
+        sessionAdmin: true
+      }
+    });
+    const completed = service.registerSession({
+      displayName: "Completed worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const disconnected = service.registerSession({
+      displayName: "Disconnected worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const stale = service.registerSession({
+      displayName: "Stale worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const active = service.registerSession({
+      displayName: "Active worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+
+    service.updateSessionState(completed.sessionUid, completed.sessionToken, "complete", "Done.");
+    service.disconnectSession(disconnected.sessionUid, disconnected.sessionToken);
+    db.prepare("UPDATE sessions SET last_heartbeat_at = ? WHERE session_uid = ?").run(
+      "2026-05-28T09:00:00.000Z",
+      stale.sessionUid
+    );
+    db.prepare(
+      `
+      INSERT INTO session_attention_cursors (
+        session_uid,
+        stream,
+        latest_event_id,
+        acknowledged_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?)
+    `
+    ).run(completed.sessionUid, "default", 42, now.toISOString(), now.toISOString());
+    db.prepare(
+      `
+      INSERT INTO session_attention_cursors (
+        session_uid,
+        stream,
+        latest_event_id,
+        acknowledged_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?)
+    `
+    ).run(active.sessionUid, "default", 43, now.toISOString(), now.toISOString());
+    db.prepare(
+      `
+      INSERT INTO attention_delivery_attempts (
+        attempt_uid,
+        session_uid,
+        from_event_id,
+        to_event_id,
+        delivery_mode,
+        adapter,
+        status,
+        message,
+        created_at,
+        delivered_at,
+        failed_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+    ).run(
+      "attempt-completed",
+      completed.sessionUid,
+      1,
+      2,
+      "manual_poll",
+      "dashboard",
+      "delivered",
+      null,
+      now.toISOString(),
+      now.toISOString(),
+      null
+    );
+    db.prepare(
+      `
+      INSERT INTO attention_delivery_attempts (
+        attempt_uid,
+        session_uid,
+        from_event_id,
+        to_event_id,
+        delivery_mode,
+        adapter,
+        status,
+        message,
+        created_at,
+        delivered_at,
+        failed_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+    ).run(
+      "attempt-disconnected",
+      disconnected.sessionUid,
+      3,
+      4,
+      "manual_poll",
+      "dashboard",
+      "failed",
+      null,
+      now.toISOString(),
+      null,
+      now.toISOString()
+    );
+
+    now = new Date("2026-05-28T10:03:00.000Z");
+    const result = service.cleanupSessions(admin.sessionUid, admin.sessionToken);
+
+    expect(result).toMatchObject({
+      actorSessionUid: admin.sessionUid,
+      statuses: ["complete", "disconnected"],
+      deletedSessionCount: 3,
+      deletedCursorCount: 1,
+      deletedDeliveryAttemptCount: 2
+    });
+    expect(result.deletedSessionUids).toEqual(
+      expect.arrayContaining([completed.sessionUid, disconnected.sessionUid, stale.sessionUid])
+    );
+    expect(service.listSessions().map((session) => session.sessionUid)).toEqual(
+      expect.arrayContaining([admin.sessionUid, active.sessionUid])
+    );
+    expect(service.listSessions().map((session) => session.sessionUid)).not.toEqual(
+      expect.arrayContaining([completed.sessionUid, disconnected.sessionUid, stale.sessionUid])
+    );
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM session_attention_cursors").get()
+    ).toEqual({ count: 1 });
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM attention_delivery_attempts").get()
+    ).toEqual({ count: 0 });
+    expect(events.listEvents({ sessionUid: admin.sessionUid, eventType: "session.cleanup" })[0])
+      .toMatchObject({
+        payload: {
+          actorSessionUid: admin.sessionUid,
+          deletedSessionCount: 3,
+          deletedCursorCount: 1,
+          deletedDeliveryAttemptCount: 2
+        }
+      });
+    expect(JSON.stringify(result)).not.toContain(admin.sessionToken);
+    expect(JSON.stringify(result)).not.toContain(completed.sessionToken);
+  });
+
+  it("keeps non-admin sessions denied from purging roster ghosts", () => {
+    const operator = service.registerSession({
+      displayName: "Regular operator",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    const disconnected = service.registerSession({
+      displayName: "Disconnected worker",
+      clientType: "codex",
+      project: "Vault Collab",
+      workspacePath,
+      capabilities: {}
+    });
+    service.disconnectSession(disconnected.sessionUid, disconnected.sessionToken);
+
+    expect(() =>
+      service.cleanupSessions(operator.sessionUid, operator.sessionToken)
+    ).toThrow(/session cleanup requires session admin capability/i);
+    expect(service.listSessions({ status: "disconnected" })).toHaveLength(1);
+  });
+
   it("keeps implementer role-profile sessions denied from closing foreign disconnected sessions", () => {
     const implementer = service.registerSession({
       displayName: "Implementer",
