@@ -6,11 +6,12 @@ import { EventService } from "../src/services/event.service.js";
 import { HandoffService } from "../src/services/handoff.service.js";
 import { LaunchRequestService } from "../src/services/launch-request.service.js";
 import { SessionService } from "../src/services/session.service.js";
+import { seedTestProjects } from "./project-fixture.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 const adapterSecret = "phase-7-adapter-secret";
 const unknownProjectMessage =
-  "Project 'missing-project' does not exist in vault-memory. Create it first or use an existing project slug.";
+  "Project 'missing-project' does not exist. Use vault_list_projects to see valid project slugs.";
 
 function seedVaultMemoryProjects(db: CollabDatabase, slugs: string[]): void {
   db.exec(`
@@ -20,7 +21,7 @@ function seedVaultMemoryProjects(db: CollabDatabase, slugs: string[]): void {
     )
   `);
 
-  const insert = db.prepare("INSERT INTO projects (slug, name) VALUES (?, ?)");
+  const insert = db.prepare("INSERT OR IGNORE INTO projects (slug, name) VALUES (?, ?)");
   for (const slug of slugs) {
     insert.run(slug, slug);
   }
@@ -106,6 +107,7 @@ describe("SessionService", () => {
   beforeEach(() => {
     now = new Date("2026-05-28T10:00:00.000Z");
     db = createCollabDatabase(":memory:");
+    seedTestProjects(db);
     const clock = () => now;
     events = new EventService(db, clock);
     agents = new AgentProfileService(db, events, clock);
@@ -196,7 +198,7 @@ describe("SessionService", () => {
     });
   });
 
-  it("rejects sessions when the project slug does not exist in vault-memory", () => {
+  it("rejects sessions when the project slug has no projects row", () => {
     seedVaultMemoryProjects(db, ["vault-collab"]);
 
     expect(() =>

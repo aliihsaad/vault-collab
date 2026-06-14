@@ -316,6 +316,8 @@ describe("Vault Collab schema migrations", () => {
       );
     `);
 
+    seedSchemaProjects(db, ["Vault Collab", "vault_collab"]);
+
     applySchema(db);
 
     const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all() as Array<{
@@ -404,6 +406,351 @@ describe("Vault Collab schema migrations", () => {
     );
   });
 
+  it("recreates project-routed tables with project slug foreign keys and deletes orphan rows", () => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.exec(`
+      CREATE TABLE projects (
+        slug TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+      );
+
+      INSERT INTO projects (slug, name)
+      VALUES
+        ('vault-collab', 'Vault Collab'),
+        ('the-vault', 'The Vault');
+
+      CREATE TABLE sessions (
+        session_uid TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        client_type TEXT NOT NULL,
+        project TEXT NOT NULL,
+        workspace_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        session_token TEXT NOT NULL,
+        last_heartbeat_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE handoffs (
+        handoff_uid TEXT PRIMARY KEY,
+        vault_memory_uid TEXT,
+        short_prompt TEXT NOT NULL,
+        source_project TEXT NOT NULL,
+        target_project TEXT NOT NULL,
+        related_projects_json TEXT NOT NULL,
+        related_files_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        urgent INTEGER NOT NULL,
+        claimed_by_session_uid TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        handoff_uid TEXT,
+        session_uid TEXT,
+        event_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      INSERT INTO sessions (
+        session_uid,
+        display_name,
+        client_type,
+        project,
+        workspace_path,
+        status,
+        capabilities_json,
+        session_token,
+        last_heartbeat_at,
+        created_at,
+        updated_at
+      )
+      VALUES
+        ('vc_sess_valid', 'Valid', 'codex', 'vault-collab', 'C:\\workspace', 'idle', '{}', 'token1', '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z'),
+        ('vc_sess_orphan', 'Orphan', 'codex', 'missing-project', 'C:\\workspace', 'idle', '{}', 'token2', '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z');
+
+      INSERT INTO handoffs (
+        handoff_uid,
+        short_prompt,
+        source_project,
+        target_project,
+        related_projects_json,
+        related_files_json,
+        status,
+        priority,
+        urgent,
+        claimed_by_session_uid,
+        created_at,
+        updated_at
+      )
+      VALUES
+        ('vc_handoff_valid', 'Valid handoff', 'the-vault', 'vault-collab', '[]', '[]', 'available', 'normal', 0, NULL, '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z'),
+        ('vc_handoff_bad_target', 'Bad target', 'the-vault', 'missing-target', '[]', '[]', 'available', 'normal', 0, NULL, '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z'),
+        ('vc_handoff_bad_source', 'Bad source', 'missing-source', 'vault-collab', '[]', '[]', 'available', 'normal', 0, NULL, '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z');
+    `);
+
+    applySchema(db);
+
+    expect(foreignKeys(db, "sessions")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "projects",
+          from: "project",
+          to: "slug",
+          on_delete: "RESTRICT"
+        })
+      ])
+    );
+    expect(foreignKeys(db, "handoffs")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "projects",
+          from: "source_project",
+          to: "slug",
+          on_delete: "RESTRICT"
+        }),
+        expect.objectContaining({
+          table: "projects",
+          from: "target_project",
+          to: "slug",
+          on_delete: "RESTRICT"
+        })
+      ])
+    );
+    expect(
+      (
+        db.prepare("SELECT session_uid FROM sessions ORDER BY session_uid").all() as Array<{
+          session_uid: string;
+        }>
+      ).map((row) => row.session_uid)
+    ).toEqual(["vc_sess_valid"]);
+    expect(
+      (
+        db.prepare("SELECT handoff_uid FROM handoffs ORDER BY handoff_uid").all() as Array<{
+          handoff_uid: string;
+        }>
+      ).map((row) => row.handoff_uid)
+    ).toEqual(["vc_handoff_valid"]);
+    expect(
+      (
+        db
+          .prepare("SELECT event_type, payload_json FROM events WHERE event_type = ?")
+          .all("schema.project_fk_orphans_deleted") as Array<{
+          event_type: string;
+          payload_json: string;
+        }>
+      ).map((event) => JSON.parse(event.payload_json))
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "sessions",
+          column: "project",
+          orphanSlugs: ["missing-project"],
+          deletedRowCount: 1
+        }),
+        expect.objectContaining({
+          table: "handoffs",
+          column: "target_project",
+          orphanSlugs: ["missing-target"],
+          deletedRowCount: 1
+        }),
+        expect.objectContaining({
+          table: "handoffs",
+          column: "source_project",
+          orphanSlugs: ["missing-source"],
+          deletedRowCount: 1
+        })
+      ])
+    );
+  });
+
+  it("does not promote legacy project labels when creating a missing projects table", () => {
+    db = new Database(":memory:");
+    db.pragma("foreign_keys = ON");
+    db.exec(`
+      CREATE TABLE sessions (
+        session_uid TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        client_type TEXT NOT NULL,
+        project TEXT NOT NULL,
+        workspace_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        session_token TEXT NOT NULL,
+        last_heartbeat_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE handoffs (
+        handoff_uid TEXT PRIMARY KEY,
+        vault_memory_uid TEXT,
+        short_prompt TEXT NOT NULL,
+        source_project TEXT NOT NULL,
+        target_project TEXT NOT NULL,
+        related_projects_json TEXT NOT NULL,
+        related_files_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        urgent INTEGER NOT NULL,
+        claimed_by_session_uid TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      INSERT INTO sessions (
+        session_uid,
+        display_name,
+        client_type,
+        project,
+        workspace_path,
+        status,
+        capabilities_json,
+        session_token,
+        last_heartbeat_at,
+        created_at,
+        updated_at
+      )
+      VALUES
+        ('vc_sess_legacy', 'Legacy', 'codex', 'legacy-label', 'C:\\workspace', 'idle', '{}', 'token1', '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z');
+
+      INSERT INTO handoffs (
+        handoff_uid,
+        short_prompt,
+        source_project,
+        target_project,
+        related_projects_json,
+        related_files_json,
+        status,
+        priority,
+        urgent,
+        claimed_by_session_uid,
+        created_at,
+        updated_at
+      )
+      VALUES
+        ('vc_handoff_legacy', 'Legacy handoff', 'legacy-source', 'legacy-target', '[]', '[]', 'available', 'normal', 0, NULL, '2026-06-14T10:00:00.000Z', '2026-06-14T10:00:00.000Z');
+    `);
+
+    applySchema(db);
+
+    expect(db.prepare("SELECT slug FROM projects").all()).toEqual([]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM handoffs").get()).toEqual({ count: 0 });
+    expect(
+      (
+        db
+          .prepare("SELECT payload_json FROM events WHERE event_type = ? ORDER BY event_id")
+          .all("schema.project_fk_orphans_deleted") as Array<{ payload_json: string }>
+      ).map((event) => JSON.parse(event.payload_json))
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: "sessions",
+          column: "project",
+          orphanSlugs: ["legacy-label"],
+          deletedRowCount: 1
+        }),
+        expect.objectContaining({
+          table: "handoffs",
+          column: "target_project",
+          orphanSlugs: ["legacy-target"],
+          deletedRowCount: 1
+        })
+      ])
+    );
+  });
+
+  it("enforces project slug foreign keys for direct SQL inserts", () => {
+    db = createCollabDatabase(":memory:");
+    seedSchemaProjects(db, ["vault-collab", "the-vault"]);
+
+    const sessionError = catchSqliteError(() => {
+      db?.prepare(
+        `
+        INSERT INTO sessions (
+          session_uid,
+          display_name,
+          client_type,
+          project,
+          project_key,
+          workspace_path,
+          role,
+          role_profile_id,
+          status,
+          capabilities_json,
+          session_token,
+          last_heartbeat_at,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+      ).run(
+        "vc_sess_bad_project",
+        "Bad Project",
+        "codex",
+        "missing-project",
+        "missing-project",
+        "C:\\workspace",
+        "implementer",
+        "implementer",
+        "idle",
+        "{}",
+        "token",
+        "2026-06-14T10:00:00.000Z",
+        "2026-06-14T10:00:00.000Z",
+        "2026-06-14T10:00:00.000Z"
+      );
+    });
+    expect(sessionError?.code).toBe("SQLITE_CONSTRAINT_FOREIGNKEY");
+
+    const handoffError = catchSqliteError(() => {
+      db?.prepare(
+        `
+        INSERT INTO handoffs (
+          handoff_uid,
+          short_prompt,
+          source_project,
+          source_project_key,
+          target_project,
+          target_project_key,
+          related_projects_json,
+          related_files_json,
+          status,
+          priority,
+          urgent,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+      ).run(
+        "vc_handoff_bad_target",
+        "Bad target project",
+        "the-vault",
+        "the-vault",
+        "missing-project",
+        "missing-project",
+        "[]",
+        "[]",
+        "available",
+        "normal",
+        0,
+        "2026-06-14T10:00:00.000Z",
+        "2026-06-14T10:00:00.000Z"
+      );
+    });
+    expect(handoffError?.code).toBe("SQLITE_CONSTRAINT_FOREIGNKEY");
+  });
+
   it("backfills Phase 7 session snapshot columns on legacy rows", () => {
     db = new Database(":memory:");
     db.exec(`
@@ -457,6 +804,8 @@ describe("Vault Collab schema migrations", () => {
         NULL
       );
     `);
+
+    seedSchemaProjects(db, ["Vault Collab"]);
 
     applySchema(db);
 
@@ -620,6 +969,8 @@ describe("Vault Collab schema migrations", () => {
         '2026-06-02T08:00:00.000Z'
       );
     `);
+
+    seedSchemaProjects(db, ["Vault Collab"]);
 
     applySchema(db);
 
@@ -914,6 +1265,8 @@ describe("Vault Collab schema migrations", () => {
       );
     `);
 
+    seedSchemaProjects(db, ["Vault Collab", "vault_collab"]);
+
     applySchema(db);
 
     expect(columnNames(db, "sessions")).toContain("project_key");
@@ -1035,4 +1388,40 @@ function indexNames(db: Database.Database): string[] {
       name: string;
     }>
   ).map((index) => index.name);
+}
+
+function foreignKeys(db: Database.Database, table: string): Array<{
+  table: string;
+  from: string;
+  to: string;
+  on_delete: string;
+}> {
+  return db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+    on_delete: string;
+  }>;
+}
+
+function seedSchemaProjects(db: Database.Database, slugs: string[]): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      slug TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    )
+  `);
+  const insert = db.prepare("INSERT OR IGNORE INTO projects (slug, name) VALUES (?, ?)");
+  for (const slug of slugs) {
+    insert.run(slug, slug);
+  }
+}
+
+function catchSqliteError(fn: () => void): { code?: string } | undefined {
+  try {
+    fn();
+    return undefined;
+  } catch (error) {
+    return error as { code?: string };
+  }
 }

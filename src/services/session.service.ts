@@ -4,7 +4,7 @@ import { getLeaseTtlMs } from "../lease.js";
 import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type { LaunchRequestService } from "./launch-request.service.js";
-import { assertVaultProjectSlugExists } from "./project-slug-validation.js";
+import { rethrowProjectForeignKeyError } from "./project-foreign-key-error.js";
 import { resolveRoleProfileIdFromDb } from "./role-profile-resolution.js";
 import { validateVaultCollabSessionSnapshot } from "./snapshot-validator.js";
 import { coreRoleProfileIds } from "../types.js";
@@ -99,8 +99,6 @@ export class SessionService {
   ) {}
 
   registerSession(input: RegisterSessionInput): RegisteredSession {
-    assertVaultProjectSlugExists(this.db, input.project);
-
     const now = this.now();
     const sessionUid = `vc_sess_${randomUUID()}`;
     const sessionToken = randomBytes(32).toString("base64url");
@@ -186,7 +184,11 @@ export class SessionService {
         now
       });
     });
-    register();
+    try {
+      register();
+    } catch (error) {
+      rethrowProjectForeignKeyError(this.db, error, [input.project]);
+    }
 
     return this.requireSession(sessionUid);
   }

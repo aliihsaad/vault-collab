@@ -12,7 +12,6 @@ import { HandoffDetailService } from "../services/handoff-detail.service.js";
 import { HandoffService } from "../services/handoff.service.js";
 import { LaunchRequestService } from "../services/launch-request.service.js";
 import { PolicyEngine } from "../services/policy-engine.service.js";
-import { assertVaultProjectSlugExists } from "../services/project-slug-validation.js";
 import { SecurityScanner } from "../services/security-scanner.service.js";
 import { AttentionReceiverService, type ReceiverAdapter } from "../services/attention-receiver.service.js";
 import { SessionService } from "../services/session.service.js";
@@ -1192,8 +1191,6 @@ export function createVaultCollabMcpTools(
       }),
     vault_collab_register_session: (args) => {
       const project = requiredString(args, "project");
-      assertVaultProjectSlugExists(db, project);
-
       const registered = sessions.registerSession({
         displayName: requiredString(args, "displayName", "display_name"),
         clientType: requiredClientType(args, "clientType", "client_type"),
@@ -1417,9 +1414,6 @@ export function createVaultCollabMcpTools(
     vault_collab_publish_handoff: (args) => {
       const sourceProject = requiredString(args, "sourceProject", "source_project");
       const targetProject = requiredString(args, "targetProject", "target_project");
-      assertVaultProjectSlugExists(db, sourceProject);
-      assertVaultProjectSlugExists(db, targetProject);
-
       return handoffs.publishHandoff({
         shortPrompt: requiredString(args, "shortPrompt", "short_prompt"),
         sourceProject,
@@ -1450,9 +1444,6 @@ export function createVaultCollabMcpTools(
       }
       const sourceProject = requiredString(args, "sourceProject", "source_project");
       const targetProject = requiredString(args, "targetProject", "target_project");
-      assertVaultProjectSlugExists(db, sourceProject);
-      assertVaultProjectSlugExists(db, targetProject);
-
       return linkedHandoffs.publishHandoffWithVaultMemory({
         shortPrompt: requiredString(args, "shortPrompt", "short_prompt"),
         fullBrief: requiredString(args, "fullBrief", "full_brief"),

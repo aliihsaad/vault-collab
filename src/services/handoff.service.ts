@@ -6,9 +6,9 @@ import { discoveryHandoffSchemaVersion, progressHandoffStatuses } from "../types
 import type { EventService } from "./event.service.js";
 import type { PolicyEngine } from "./policy-engine.service.js";
 import {
-  assertVaultProjectSlugExists,
-  missingVaultProjectSlugWarnings
-} from "./project-slug-validation.js";
+  missingProjectSlugWarnings,
+  rethrowProjectForeignKeyError
+} from "./project-foreign-key-error.js";
 import {
   firstSuggestedRoleProfileIdForLabels,
   resolveRoleProfileIdFromDb
@@ -132,9 +132,6 @@ export class HandoffService {
   ) {}
 
   publishHandoff(input: PublishHandoffInput): HandoffRecord {
-    assertVaultProjectSlugExists(this.db, input.sourceProject);
-    assertVaultProjectSlugExists(this.db, input.targetProject);
-
     const now = this.now();
     const handoffUid = `vc_handoff_${randomUUID()}`;
     const priority = input.priority ?? "normal";
@@ -143,7 +140,7 @@ export class HandoffService {
     const sourceProjectKey = projectKey(input.sourceProject);
     const targetProjectKey = projectKey(input.targetProject);
     const relatedProjects = normalizeRelatedProjects(input);
-    const warnings = missingVaultProjectSlugWarnings(this.db, relatedProjects);
+    const warnings = missingProjectSlugWarnings(this.db, relatedProjects);
     const queuePosition =
       input.queuePosition ?? this.nextQueuePosition(input.targetProject, queueKey);
     const labels = input.labels ?? [];
@@ -164,78 +161,85 @@ export class HandoffService {
       typedPayload
     });
 
-    this.db
-      .prepare(
+    try {
+      this.db
+        .prepare(
+          `
+          INSERT INTO handoffs (
+            handoff_uid,
+            vault_memory_uid,
+            short_prompt,
+            source_project,
+            source_project_key,
+            target_project,
+            target_project_key,
+            related_projects_json,
+            related_files_json,
+            source_session_uid,
+            suggested_session_uid,
+            suggested_client_type,
+            suggested_role_profile_id,
+            typed_payload,
+            queue_key,
+            labels_json,
+            queue_position,
+            depends_on_handoff_uid,
+            status,
+            priority,
+            urgent,
+            claimed_by_session_uid,
+            claim_token,
+            lease_expires_at,
+            progress_note,
+            resolution_summary,
+            reopen_reason,
+            created_at,
+            updated_at,
+            resolved_at,
+            stale_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
-        INSERT INTO handoffs (
-          handoff_uid,
-          vault_memory_uid,
-          short_prompt,
-          source_project,
-          source_project_key,
-          target_project,
-          target_project_key,
-          related_projects_json,
-          related_files_json,
-          source_session_uid,
-          suggested_session_uid,
-          suggested_client_type,
-          suggested_role_profile_id,
-          typed_payload,
-          queue_key,
-          labels_json,
-          queue_position,
-          depends_on_handoff_uid,
-          status,
-          priority,
-          urgent,
-          claimed_by_session_uid,
-          claim_token,
-          lease_expires_at,
-          progress_note,
-          resolution_summary,
-          reopen_reason,
-          created_at,
-          updated_at,
-          resolved_at,
-          stale_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-      )
-      .run(
-        handoffUid,
-        input.vaultMemoryUid ?? null,
-        input.shortPrompt,
+        .run(
+          handoffUid,
+          input.vaultMemoryUid ?? null,
+          input.shortPrompt,
+          input.sourceProject,
+          sourceProjectKey,
+          input.targetProject,
+          targetProjectKey,
+          JSON.stringify(relatedProjects),
+          JSON.stringify(input.relatedFiles ?? []),
+          input.sourceSessionUid ?? null,
+          input.suggestedSessionUid ?? null,
+          input.suggestedClientType ?? null,
+          suggestedRoleProfileId,
+          typedPayload ? JSON.stringify(typedPayload) : null,
+          queueKey,
+          JSON.stringify(labels),
+          queuePosition,
+          input.dependsOnHandoffUid ?? null,
+          "available",
+          priority,
+          urgent ? 1 : 0,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          now,
+          now,
+          null,
+          null
+        );
+    } catch (error) {
+      rethrowProjectForeignKeyError(this.db, error, [
         input.sourceProject,
-        sourceProjectKey,
-        input.targetProject,
-        targetProjectKey,
-        JSON.stringify(relatedProjects),
-        JSON.stringify(input.relatedFiles ?? []),
-        input.sourceSessionUid ?? null,
-        input.suggestedSessionUid ?? null,
-        input.suggestedClientType ?? null,
-        suggestedRoleProfileId,
-        typedPayload ? JSON.stringify(typedPayload) : null,
-        queueKey,
-        JSON.stringify(labels),
-        queuePosition,
-        input.dependsOnHandoffUid ?? null,
-        "available",
-        priority,
-        urgent ? 1 : 0,
-        null,
-        null,
-        null,
-        null,
-        null,
-        null,
-        now,
-        now,
-        null,
-        null
-      );
+        input.targetProject
+      ]);
+    }
 
     this.events.recordEvent({
       eventType: "handoff.published",

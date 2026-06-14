@@ -6,6 +6,7 @@ import { LaunchRequestService } from "../src/services/launch-request.service.js"
 import { VaultLinkedHandoffService, type VaultMemoryClient } from "../src/services/vault-link.service.js";
 import type { JsonRecord, RegisteredSession } from "../src/types.js";
 import { SessionService } from "../src/services/session.service.js";
+import { seedTestProjects } from "./project-fixture.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 
@@ -46,6 +47,7 @@ describe("VaultLinkedHandoffService", () => {
     const now = new Date("2026-05-28T12:00:00.000Z");
     const clock = () => now;
     db = createCollabDatabase(":memory:");
+    seedTestProjects(db);
     events = new EventService(db, clock);
     const launchRequests = new LaunchRequestService(db, events, clock);
     sessions = new SessionService(db, events, launchRequests, clock);

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCollabDatabase, type CollabDatabase } from "../src/database/connection.js";
 import { AgentProfileService } from "../src/services/agent-profile.service.js";
 import { EventService } from "../src/services/event.service.js";
+import { seedTestProjects } from "./project-fixture.js";
 
 const expectedCoreRoleProfileIds = [
   "coordinator",
@@ -28,6 +29,7 @@ describe("AgentProfileService", () => {
     now = new Date("2026-05-29T12:00:00.000Z");
     const clock = () => now;
     db = createCollabDatabase(":memory:");
+    seedTestProjects(db);
     service = new AgentProfileService(db, new EventService(db, clock), clock);
   });
 

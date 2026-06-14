@@ -7,10 +7,11 @@ import { LaunchRequestService } from "../src/services/launch-request.service.js"
 import { SecurityScanner } from "../src/services/security-scanner.service.js";
 import { SessionService } from "../src/services/session.service.js";
 import type { RegisteredSession } from "../src/types.js";
+import { seedTestProjects } from "./project-fixture.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 const unknownProjectMessage =
-  "Project 'missing-project' does not exist in vault-memory. Create it first or use an existing project slug.";
+  "Project 'missing-project' does not exist. Use vault_list_projects to see valid project slugs.";
 
 const discoveryTypedPayload = {
   schema_version: "vault_collab.discovery_handoff.v1",
@@ -77,7 +78,7 @@ function seedVaultMemoryProjects(db: CollabDatabase, slugs: string[]): void {
     )
   `);
 
-  const insert = db.prepare("INSERT INTO projects (slug, name) VALUES (?, ?)");
+  const insert = db.prepare("INSERT OR IGNORE INTO projects (slug, name) VALUES (?, ?)");
   for (const slug of slugs) {
     insert.run(slug, slug);
   }
@@ -97,6 +98,7 @@ describe("HandoffService", () => {
     now = new Date("2026-05-28T11:00:00.000Z");
     const clock = () => now;
     db = createCollabDatabase(":memory:");
+    seedTestProjects(db);
     events = new EventService(db, clock);
     const launchRequests = new LaunchRequestService(db, events, clock);
     security = new SecurityScanner(db, events, clock);
@@ -187,7 +189,7 @@ describe("HandoffService", () => {
     expect(handoff).not.toHaveProperty("warnings");
   });
 
-  it("rejects handoffs when the target project slug does not exist in vault-memory", () => {
+  it("rejects handoffs when the target project slug has no projects row", () => {
     seedVaultMemoryProjects(db, ["the-vault", "vault-collab"]);
 
     expect(() =>
@@ -201,7 +203,7 @@ describe("HandoffService", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM handoffs").get()).toEqual({ count: 0 });
   });
 
-  it("rejects handoffs when the source project slug does not exist in vault-memory", () => {
+  it("rejects handoffs when the source project slug has no projects row", () => {
     seedVaultMemoryProjects(db, ["vault-collab"]);
 
     expect(() =>

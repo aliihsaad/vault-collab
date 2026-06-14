@@ -10,6 +10,7 @@ import {
 } from "../src/services/security-scanner.service.js";
 import { SessionService } from "../src/services/session.service.js";
 import type { HandoffActionAffordance, RegisteredSession } from "../src/types.js";
+import { seedTestProjects } from "./project-fixture.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 
@@ -29,6 +30,7 @@ describe("SecurityScanner", () => {
     now = new Date("2026-06-03T09:00:00.000Z");
     const clock = () => now;
     db = createCollabDatabase(":memory:");
+    seedTestProjects(db);
     events = new EventService(db, clock);
     launchRequests = new LaunchRequestService(db, events, clock);
     sessions = new SessionService(db, events, launchRequests, clock);

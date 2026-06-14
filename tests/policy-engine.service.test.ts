@@ -7,6 +7,7 @@ import { HandoffService } from "../src/services/handoff.service.js";
 import { LaunchRequestService } from "../src/services/launch-request.service.js";
 import { PolicyEngine } from "../src/services/policy-engine.service.js";
 import { SessionService } from "../src/services/session.service.js";
+import { seedTestProjects } from "./project-fixture.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 
@@ -20,6 +21,7 @@ describe("PolicyEngine", () => {
     now = new Date("2026-06-03T12:00:00.000Z");
     const clock = () => now;
     db = createCollabDatabase(":memory:");
+    seedTestProjects(db);
     events = new EventService(db, clock);
     policy = new PolicyEngine(db, events, clock);
   });

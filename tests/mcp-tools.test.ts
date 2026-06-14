@@ -12,6 +12,7 @@ import {
 import { createCollabDatabase } from "../src/database/connection.js";
 import { coreRoleProfileIds } from "../src/types.js";
 import type { VaultMemoryClient, VaultMemorySaveInput } from "../src/services/vault-link.service.js";
+import { seedTestProjectsAtPath } from "./project-fixture.js";
 
 function structured<T>(result: VaultCollabToolResult): T {
   expect(result.isError).toBeUndefined();
@@ -180,7 +181,7 @@ function seedVaultMemoryProjects(dbPath: string, slugs: string[]): void {
     )
   `);
 
-  const insert = db.prepare("INSERT INTO projects (slug, name) VALUES (?, ?)");
+  const insert = db.prepare("INSERT OR IGNORE INTO projects (slug, name) VALUES (?, ?)");
   for (const slug of slugs) {
     insert.run(slug, slug);
   }
@@ -195,6 +196,7 @@ describe("Vault Collab MCP tools", () => {
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "vault-collab-mcp-"));
     dbPath = join(cwd, "collab.db");
+    seedTestProjectsAtPath(dbPath);
   });
 
   afterEach(() => {
@@ -876,7 +878,7 @@ describe("Vault Collab MCP tools", () => {
     expect(rejected.content[0]).toMatchObject({ type: "text" });
     const message = rejected.content[0]?.type === "text" ? rejected.content[0].text : "";
     expect(message).toBe(
-      "Project 'missing-project' does not exist in vault-memory. Create it first or use an existing project slug."
+      "Project 'missing-project' does not exist. Use vault_list_projects to see valid project slugs."
     );
 
     const db = createCollabDatabase(dbPath);
@@ -958,7 +960,7 @@ describe("Vault Collab MCP tools", () => {
     expect(rejected.content[0]).toMatchObject({ type: "text" });
     const message = rejected.content[0]?.type === "text" ? rejected.content[0].text : "";
     expect(message).toBe(
-      "Project 'missing-project' does not exist in vault-memory. Create it first or use an existing project slug."
+      "Project 'missing-project' does not exist. Use vault_list_projects to see valid project slugs."
     );
 
     const db = createCollabDatabase(dbPath);
@@ -966,7 +968,7 @@ describe("Vault Collab MCP tools", () => {
     db.close();
   });
 
-  it("validates linked handoff projects at the MCP handler before saving Vault memory", async () => {
+  it("returns a clean FK error for linked handoff projects and creates no local handoff", async () => {
     seedVaultMemoryProjects(dbPath, ["vault-collab"]);
     const saves: VaultMemorySaveInput[] = [];
     const vaultMemoryClient: VaultMemoryClient = {
@@ -980,16 +982,16 @@ describe("Vault Collab MCP tools", () => {
 
     const rejected = await tools.callTool("vault_collab_publish_handoff_with_vault_memory", {
       shortPrompt: "This should fail before memory save.",
-      fullBrief: "The MCP handler should reject the invalid project slug first.",
+      fullBrief: "The local handoff insert should reject the invalid project slug.",
       sourceProject: "vault-collab",
       targetProject: "missing-project"
     });
 
     expect(rejected.isError).toBe(true);
     expect(JSON.stringify(rejected)).toMatch(
-      /Project 'missing-project' does not exist in vault-memory/
+      /Project 'missing-project' does not exist\. Use vault_list_projects/
     );
-    expect(saves).toEqual([]);
+    expect(saves).toHaveLength(1);
 
     const db = createCollabDatabase(dbPath);
     expect(db.prepare("SELECT COUNT(*) AS count FROM handoffs").get()).toEqual({ count: 0 });

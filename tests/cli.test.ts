@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.js";
 import { createCollabDatabase } from "../src/database/connection.js";
+import { seedTestProjectsAtPath } from "./project-fixture.js";
 
 interface CliResult {
   exitCode: number;
@@ -28,6 +29,7 @@ describe("vault-collab CLI", () => {
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "vault-collab-cli-"));
     dbPath = join(cwd, "collab.db");
+    seedTestProjectsAtPath(dbPath);
   });
 
   afterEach(() => {

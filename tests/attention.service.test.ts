@@ -7,6 +7,7 @@ import { HandoffService } from "../src/services/handoff.service.js";
 import { LaunchRequestService } from "../src/services/launch-request.service.js";
 import { SessionService } from "../src/services/session.service.js";
 import type { RegisteredSession } from "../src/types.js";
+import { seedTestProjects } from "./project-fixture.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 
@@ -30,6 +31,7 @@ describe("AttentionService", () => {
     now = new Date("2026-05-29T14:00:00.000Z");
     const clock = () => now;
     db = createCollabDatabase(":memory:");
+    seedTestProjects(db);
     events = new EventService(db, clock);
     launchRequests = new LaunchRequestService(db, events, clock);
     sessions = new SessionService(db, events, launchRequests, clock);

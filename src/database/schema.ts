@@ -11,6 +11,8 @@ import {
 import type { CoreRoleProfileId } from "../types.js";
 
 export function applySchema(db: Database.Database): void {
+  ensureProjectsTable(db);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       session_uid TEXT PRIMARY KEY,
@@ -36,7 +38,8 @@ export function applySchema(db: Database.Database): void {
       last_heartbeat_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      disconnected_at TEXT
+      disconnected_at TEXT,
+      FOREIGN KEY (project) REFERENCES projects(slug) ON DELETE RESTRICT
     );
 
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
@@ -198,7 +201,9 @@ export function applySchema(db: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       resolved_at TEXT,
-      stale_at TEXT
+      stale_at TEXT,
+      FOREIGN KEY (source_project) REFERENCES projects(slug) ON DELETE RESTRICT,
+      FOREIGN KEY (target_project) REFERENCES projects(slug) ON DELETE RESTRICT
     );
 
     CREATE INDEX IF NOT EXISTS idx_handoffs_target_project ON handoffs(target_project);
@@ -336,7 +341,9 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "sessions", "project_key", "TEXT");
   addColumnIfMissing(db, "sessions", "role", "TEXT NOT NULL DEFAULT 'implementer'");
   addColumnIfMissing(db, "sessions", "role_profile_id", "TEXT");
+  addColumnIfMissing(db, "sessions", "status_detail", "TEXT");
   addColumnIfMissing(db, "sessions", "agent_uid", "TEXT");
+  addColumnIfMissing(db, "sessions", "current_handoff_uid", "TEXT");
   addColumnIfMissing(db, "sessions", "delivery_mode", "TEXT NOT NULL DEFAULT 'manual_poll'");
   addColumnIfMissing(db, "sessions", "delivery_wakeable", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "sessions", "delivery_last_ack_event_id", "INTEGER");
@@ -344,6 +351,7 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "sessions", "last_snapshot_json", "TEXT");
   addColumnIfMissing(db, "sessions", "snapshot_reported_at", "TEXT");
   addColumnIfMissing(db, "sessions", "adapter_type", "TEXT NOT NULL DEFAULT 'native'");
+  addColumnIfMissing(db, "sessions", "disconnected_at", "TEXT");
   addColumnIfMissing(db, "agent_profiles", "project_key", "TEXT");
   addColumnIfMissing(db, "agent_profiles", "role_profile_id", "TEXT");
   addColumnIfMissing(
@@ -357,8 +365,14 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "launch_requests", "requested_capabilities_json", "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, "launch_requests", "approval_policy_version", "TEXT");
   addColumnIfMissing(db, "launch_requests", "approval_snapshot_json", "TEXT");
+  addColumnIfMissing(db, "handoffs", "vault_memory_uid", "TEXT");
   addColumnIfMissing(db, "handoffs", "source_project_key", "TEXT");
   addColumnIfMissing(db, "handoffs", "target_project_key", "TEXT");
+  addColumnIfMissing(db, "handoffs", "source_session_uid", "TEXT");
+  addColumnIfMissing(db, "handoffs", "suggested_session_uid", "TEXT");
+  addColumnIfMissing(db, "handoffs", "suggested_client_type", "TEXT");
+  addColumnIfMissing(db, "handoffs", "claimed_by_session_uid", "TEXT");
+  addColumnIfMissing(db, "handoffs", "claim_token", "TEXT");
   addColumnIfMissing(db, "handoffs", "queue_key", "TEXT NOT NULL DEFAULT 'default'");
   addColumnIfMissing(db, "handoffs", "labels_json", "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, "handoffs", "queue_position", "INTEGER");
@@ -366,12 +380,18 @@ export function applySchema(db: Database.Database): void {
   addColumnIfMissing(db, "handoffs", "suggested_role_profile_id", "TEXT");
   addColumnIfMissing(db, "handoffs", "typed_payload", "TEXT");
   addColumnIfMissing(db, "handoffs", "lease_expires_at", "TEXT");
+  addColumnIfMissing(db, "handoffs", "progress_note", "TEXT");
+  addColumnIfMissing(db, "handoffs", "resolution_summary", "TEXT");
+  addColumnIfMissing(db, "handoffs", "reopen_reason", "TEXT");
+  addColumnIfMissing(db, "handoffs", "resolved_at", "TEXT");
+  addColumnIfMissing(db, "handoffs", "stale_at", "TEXT");
   addColumnIfMissing(db, "discussion_threads", "project_key", "TEXT");
   addColumnIfMissing(db, "policy_packs", "is_builtin", "INTEGER NOT NULL DEFAULT 0");
 
   backfillProjectRoutingKeys(db);
   backfillRoleProfileIds(db);
   backfillClaimedHandoffLeases(db);
+  ensureProjectForeignKeyConstraints(db);
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sessions_project_key ON sessions(project_key);
@@ -612,6 +632,317 @@ export function seedPolicyPacks(
   });
 
   seed();
+}
+
+const sessionProjectFkColumns = [
+  "session_uid",
+  "display_name",
+  "client_type",
+  "project",
+  "project_key",
+  "workspace_path",
+  "role",
+  "role_profile_id",
+  "status",
+  "status_detail",
+  "capabilities_json",
+  "agent_uid",
+  "current_handoff_uid",
+  "delivery_mode",
+  "delivery_wakeable",
+  "delivery_last_ack_event_id",
+  "delivery_last_ack_at",
+  "last_snapshot_json",
+  "snapshot_reported_at",
+  "adapter_type",
+  "session_token",
+  "last_heartbeat_at",
+  "created_at",
+  "updated_at",
+  "disconnected_at"
+];
+
+const handoffProjectFkColumns = [
+  "handoff_uid",
+  "vault_memory_uid",
+  "short_prompt",
+  "source_project",
+  "source_project_key",
+  "target_project",
+  "target_project_key",
+  "related_projects_json",
+  "related_files_json",
+  "source_session_uid",
+  "suggested_session_uid",
+  "suggested_client_type",
+  "suggested_role_profile_id",
+  "typed_payload",
+  "queue_key",
+  "labels_json",
+  "queue_position",
+  "depends_on_handoff_uid",
+  "status",
+  "priority",
+  "urgent",
+  "claimed_by_session_uid",
+  "claim_token",
+  "lease_expires_at",
+  "progress_note",
+  "resolution_summary",
+  "reopen_reason",
+  "created_at",
+  "updated_at",
+  "resolved_at",
+  "stale_at"
+];
+
+function ensureProjectsTable(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      slug TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    )
+  `);
+}
+
+function ensureProjectForeignKeyConstraints(db: Database.Database): void {
+  const sessionsNeedsFk = !hasProjectForeignKey(db, "sessions", "project");
+  const handoffsNeedsSourceFk = !hasProjectForeignKey(db, "handoffs", "source_project");
+  const handoffsNeedsTargetFk = !hasProjectForeignKey(db, "handoffs", "target_project");
+
+  if (!sessionsNeedsFk && !handoffsNeedsSourceFk && !handoffsNeedsTargetFk) {
+    return;
+  }
+
+  deleteProjectOrphans(db);
+
+  if (sessionsNeedsFk) {
+    recreateTableWithProjectFks(
+      db,
+      "sessions",
+      "sessions_new",
+      sessionsTableWithProjectFkSql("sessions_new"),
+      sessionProjectFkColumns
+    );
+  }
+
+  if (handoffsNeedsSourceFk || handoffsNeedsTargetFk) {
+    recreateTableWithProjectFks(
+      db,
+      "handoffs",
+      "handoffs_new",
+      handoffsTableWithProjectFkSql("handoffs_new"),
+      handoffProjectFkColumns
+    );
+  }
+}
+
+function deleteProjectOrphans(db: Database.Database): void {
+  deleteOrphanProjectRows(db, "handoffs", "target_project", "handoff_uid");
+  deleteOrphanProjectRows(db, "handoffs", "source_project", "handoff_uid");
+  deleteOrphanProjectRows(db, "sessions", "project", "session_uid");
+}
+
+function deleteOrphanProjectRows(
+  db: Database.Database,
+  table: string,
+  column: string,
+  idColumn: string
+): void {
+  if (
+    !tableExists(db, table) ||
+    !columnExists(db, table, column) ||
+    !tableExists(db, "projects") ||
+    !columnExists(db, "projects", "slug")
+  ) {
+    return;
+  }
+
+  const rows = db
+    .prepare(
+      `
+      SELECT ${idColumn} AS row_uid, ${column} AS project_slug
+      FROM ${table}
+      WHERE ${column} NOT IN (SELECT slug FROM projects)
+      ORDER BY ${idColumn} ASC
+    `
+    )
+    .all() as Array<{ row_uid: string; project_slug: string }>;
+
+  if (rows.length === 0) {
+    return;
+  }
+
+  const result = db
+    .prepare(
+      `
+      DELETE FROM ${table}
+      WHERE ${column} NOT IN (SELECT slug FROM projects)
+    `
+    )
+    .run();
+
+  recordProjectFkDeletion(db, {
+    table,
+    column,
+    orphanSlugs: Array.from(new Set(rows.map((row) => row.project_slug))).sort(),
+    deletedRowIds: rows.map((row) => row.row_uid),
+    deletedRowCount: result.changes
+  });
+}
+
+function recordProjectFkDeletion(
+  db: Database.Database,
+  payload: {
+    table: string;
+    column: string;
+    orphanSlugs: string[];
+    deletedRowIds: string[];
+    deletedRowCount: number;
+  }
+): void {
+  if (!tableExists(db, "events")) {
+    return;
+  }
+
+  db.prepare(
+    `
+    INSERT INTO events (event_type, payload_json, created_at)
+    VALUES (?, ?, ?)
+  `
+  ).run("schema.project_fk_orphans_deleted", JSON.stringify(payload), new Date().toISOString());
+}
+
+function recreateTableWithProjectFks(
+  db: Database.Database,
+  table: string,
+  newTable: string,
+  createSql: string,
+  columns: string[]
+): void {
+  const columnList = columns.join(", ");
+  const recreate = db.transaction(() => {
+    db.exec(`DROP TABLE IF EXISTS ${newTable}`);
+    db.exec(createSql);
+    db.exec(`INSERT INTO ${newTable} (${columnList}) SELECT ${columnList} FROM ${table}`);
+    db.exec(`DROP TABLE ${table}`);
+    db.exec(`ALTER TABLE ${newTable} RENAME TO ${table}`);
+  });
+  recreate();
+}
+
+function sessionsTableWithProjectFkSql(table: string): string {
+  return `
+    CREATE TABLE ${table} (
+      session_uid TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      client_type TEXT NOT NULL,
+      project TEXT NOT NULL,
+      project_key TEXT NOT NULL,
+      workspace_path TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'implementer',
+      role_profile_id TEXT,
+      status TEXT NOT NULL,
+      status_detail TEXT,
+      capabilities_json TEXT NOT NULL,
+      agent_uid TEXT,
+      current_handoff_uid TEXT,
+      delivery_mode TEXT NOT NULL DEFAULT 'manual_poll',
+      delivery_wakeable INTEGER NOT NULL DEFAULT 0,
+      delivery_last_ack_event_id INTEGER,
+      delivery_last_ack_at TEXT,
+      last_snapshot_json TEXT,
+      snapshot_reported_at TEXT,
+      adapter_type TEXT NOT NULL DEFAULT 'native',
+      session_token TEXT NOT NULL,
+      last_heartbeat_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      disconnected_at TEXT,
+      FOREIGN KEY (project) REFERENCES projects(slug) ON DELETE RESTRICT
+    )
+  `;
+}
+
+function handoffsTableWithProjectFkSql(table: string): string {
+  return `
+    CREATE TABLE ${table} (
+      handoff_uid TEXT PRIMARY KEY,
+      vault_memory_uid TEXT,
+      short_prompt TEXT NOT NULL,
+      source_project TEXT NOT NULL,
+      source_project_key TEXT NOT NULL,
+      target_project TEXT NOT NULL,
+      target_project_key TEXT NOT NULL,
+      related_projects_json TEXT NOT NULL,
+      related_files_json TEXT NOT NULL,
+      source_session_uid TEXT,
+      suggested_session_uid TEXT,
+      suggested_client_type TEXT,
+      suggested_role_profile_id TEXT,
+      typed_payload TEXT,
+      queue_key TEXT NOT NULL DEFAULT 'default',
+      labels_json TEXT NOT NULL DEFAULT '[]',
+      queue_position INTEGER,
+      depends_on_handoff_uid TEXT,
+      status TEXT NOT NULL,
+      priority TEXT NOT NULL,
+      urgent INTEGER NOT NULL,
+      claimed_by_session_uid TEXT,
+      claim_token TEXT,
+      lease_expires_at TEXT,
+      progress_note TEXT,
+      resolution_summary TEXT,
+      reopen_reason TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT,
+      stale_at TEXT,
+      FOREIGN KEY (source_project) REFERENCES projects(slug) ON DELETE RESTRICT,
+      FOREIGN KEY (target_project) REFERENCES projects(slug) ON DELETE RESTRICT
+    )
+  `;
+}
+
+function hasProjectForeignKey(
+  db: Database.Database,
+  table: string,
+  column: string
+): boolean {
+  if (!tableExists(db, table)) {
+    return false;
+  }
+
+  return (
+    db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+      table: string;
+      from: string;
+      to: string;
+      on_delete: string;
+    }>
+  ).some(
+    (foreignKey) =>
+      foreignKey.table === "projects" &&
+      foreignKey.from === column &&
+      foreignKey.to === "slug" &&
+      foreignKey.on_delete.toUpperCase() === "RESTRICT"
+  );
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  const row = db
+    .prepare(
+      `
+      SELECT 1
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name = ?
+      LIMIT 1
+    `
+    )
+    .get(table) as { "1": number } | undefined;
+
+  return row !== undefined;
 }
 
 function addColumnIfMissing(
