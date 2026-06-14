@@ -12,6 +12,7 @@ import { HandoffDetailService } from "../services/handoff-detail.service.js";
 import { HandoffService } from "../services/handoff.service.js";
 import { LaunchRequestService } from "../services/launch-request.service.js";
 import { PolicyEngine } from "../services/policy-engine.service.js";
+import { assertVaultProjectSlugExists } from "../services/project-slug-validation.js";
 import { SecurityScanner } from "../services/security-scanner.service.js";
 import { AttentionReceiverService, type ReceiverAdapter } from "../services/attention-receiver.service.js";
 import { SessionService } from "../services/session.service.js";
@@ -1190,10 +1191,13 @@ export function createVaultCollabMcpTools(
         project: optionalString(args, "project") ?? null
       }),
     vault_collab_register_session: (args) => {
+      const project = requiredString(args, "project");
+      assertVaultProjectSlugExists(db, project);
+
       const registered = sessions.registerSession({
         displayName: requiredString(args, "displayName", "display_name"),
         clientType: requiredClientType(args, "clientType", "client_type"),
-        project: requiredString(args, "project"),
+        project,
         workspacePath: requiredString(args, "workspacePath", "workspace_path"),
         role: optionalString(args, "role"),
         roleProfileId: optionalString(args, "roleProfileId", "role_profile_id") ?? null,
@@ -1410,11 +1414,16 @@ export function createVaultCollabMcpTools(
         role: optionalString(args, "role"),
         status: optionalAgentProfileStatus(args, "status")
       }),
-    vault_collab_publish_handoff: (args) =>
-      handoffs.publishHandoff({
+    vault_collab_publish_handoff: (args) => {
+      const sourceProject = requiredString(args, "sourceProject", "source_project");
+      const targetProject = requiredString(args, "targetProject", "target_project");
+      assertVaultProjectSlugExists(db, sourceProject);
+      assertVaultProjectSlugExists(db, targetProject);
+
+      return handoffs.publishHandoff({
         shortPrompt: requiredString(args, "shortPrompt", "short_prompt"),
-        sourceProject: requiredString(args, "sourceProject", "source_project"),
-        targetProject: requiredString(args, "targetProject", "target_project"),
+        sourceProject,
+        targetProject,
         relatedProjects: optionalStringArray(args, "relatedProjects", "related_projects") ?? [],
         relatedFiles: optionalStringArray(args, "relatedFiles", "related_files") ?? [],
         sourceSessionUid: optionalString(args, "sourceSessionUid", "source_session_uid") ?? null,
@@ -1433,17 +1442,22 @@ export function createVaultCollabMcpTools(
         priority: optionalHandoffPriority(args, "priority") ?? "normal",
         urgent: optionalBoolean(args, "urgent") ?? false,
         typedPayload: optionalRecord(args, "typedPayload", "typed_payload") ?? null
-      }),
+      });
+    },
     vault_collab_publish_handoff_with_vault_memory: (args) => {
       if (!linkedHandoffs) {
         throw new Error(vaultLinkedPublishUnavailableMessage());
       }
+      const sourceProject = requiredString(args, "sourceProject", "source_project");
+      const targetProject = requiredString(args, "targetProject", "target_project");
+      assertVaultProjectSlugExists(db, sourceProject);
+      assertVaultProjectSlugExists(db, targetProject);
 
       return linkedHandoffs.publishHandoffWithVaultMemory({
         shortPrompt: requiredString(args, "shortPrompt", "short_prompt"),
         fullBrief: requiredString(args, "fullBrief", "full_brief"),
-        sourceProject: requiredString(args, "sourceProject", "source_project"),
-        targetProject: requiredString(args, "targetProject", "target_project"),
+        sourceProject,
+        targetProject,
         relatedProjects: optionalStringArray(args, "relatedProjects", "related_projects") ?? [],
         relatedFiles: optionalStringArray(args, "relatedFiles", "related_files") ?? [],
         sourceSessionUid: optionalString(args, "sourceSessionUid", "source_session_uid") ?? null,
