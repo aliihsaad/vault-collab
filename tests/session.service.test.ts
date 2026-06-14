@@ -9,6 +9,22 @@ import { SessionService } from "../src/services/session.service.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 const adapterSecret = "phase-7-adapter-secret";
+const unknownProjectMessage =
+  "Project 'missing-project' does not exist in vault-memory. Create it first or use an existing project slug.";
+
+function seedVaultMemoryProjects(db: CollabDatabase, slugs: string[]): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      slug TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    )
+  `);
+
+  const insert = db.prepare("INSERT INTO projects (slug, name) VALUES (?, ?)");
+  for (const slug of slugs) {
+    insert.run(slug, slug);
+  }
+}
 
 function validSessionSnapshot(
   sessionUid: string,
@@ -161,6 +177,39 @@ describe("SessionService", () => {
       snapshotReportedAt: null
     });
     expect(sessions[0]).not.toHaveProperty("sessionToken");
+  });
+
+  it("registers sessions when the project slug exists in vault-memory", () => {
+    seedVaultMemoryProjects(db, ["vault-collab"]);
+
+    const registered = service.registerSession({
+      displayName: "Codex terminal",
+      clientType: "codex",
+      project: "vault-collab",
+      workspacePath,
+      capabilities: {}
+    });
+
+    expect(registered).toMatchObject({
+      project: "vault-collab",
+      status: "idle"
+    });
+  });
+
+  it("rejects sessions when the project slug does not exist in vault-memory", () => {
+    seedVaultMemoryProjects(db, ["vault-collab"]);
+
+    expect(() =>
+      service.registerSession({
+        displayName: "Codex terminal",
+        clientType: "codex",
+        project: "missing-project",
+        workspacePath,
+        capabilities: {}
+      })
+    ).toThrow(unknownProjectMessage);
+
+    expect(db.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 0 });
   });
 
   it("round-trips a first-class custom session role", () => {

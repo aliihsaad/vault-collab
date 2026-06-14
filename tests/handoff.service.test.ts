@@ -9,6 +9,8 @@ import { SessionService } from "../src/services/session.service.js";
 import type { RegisteredSession } from "../src/types.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
+const unknownProjectMessage =
+  "Project 'missing-project' does not exist in vault-memory. Create it first or use an existing project slug.";
 
 const discoveryTypedPayload = {
   schema_version: "vault_collab.discovery_handoff.v1",
@@ -66,6 +68,20 @@ const discoveryTypedPayload = {
     capabilities: ["typescript", "sqlite", "tdd"]
   }
 };
+
+function seedVaultMemoryProjects(db: CollabDatabase, slugs: string[]): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      slug TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    )
+  `);
+
+  const insert = db.prepare("INSERT INTO projects (slug, name) VALUES (?, ?)");
+  for (const slug of slugs) {
+    insert.run(slug, slug);
+  }
+}
 
 describe("HandoffService", () => {
   let db: CollabDatabase;
@@ -150,6 +166,74 @@ describe("HandoffService", () => {
       status: "available"
     });
     expect(inbox[0]).not.toHaveProperty("claimToken");
+  });
+
+  it("publishes handoffs when source and target project slugs exist in vault-memory", () => {
+    seedVaultMemoryProjects(db, ["the-vault", "vault-collab", "codex-brain"]);
+
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Validate strict project slugs.",
+      sourceProject: "the-vault",
+      targetProject: "vault-collab",
+      relatedProjects: ["codex-brain"]
+    });
+
+    expect(handoff).toMatchObject({
+      sourceProject: "the-vault",
+      targetProject: "vault-collab",
+      relatedProjects: ["codex-brain"],
+      status: "available"
+    });
+    expect(handoff).not.toHaveProperty("warnings");
+  });
+
+  it("rejects handoffs when the target project slug does not exist in vault-memory", () => {
+    seedVaultMemoryProjects(db, ["the-vault", "vault-collab"]);
+
+    expect(() =>
+      handoffs.publishHandoff({
+        shortPrompt: "Reject invalid target project.",
+        sourceProject: "the-vault",
+        targetProject: "missing-project"
+      })
+    ).toThrow(unknownProjectMessage);
+
+    expect(db.prepare("SELECT COUNT(*) AS count FROM handoffs").get()).toEqual({ count: 0 });
+  });
+
+  it("rejects handoffs when the source project slug does not exist in vault-memory", () => {
+    seedVaultMemoryProjects(db, ["vault-collab"]);
+
+    expect(() =>
+      handoffs.publishHandoff({
+        shortPrompt: "Reject invalid source project.",
+        sourceProject: "missing-project",
+        targetProject: "vault-collab"
+      })
+    ).toThrow(unknownProjectMessage);
+
+    expect(db.prepare("SELECT COUNT(*) AS count FROM handoffs").get()).toEqual({ count: 0 });
+  });
+
+  it("warns but still publishes handoffs with invalid related project slugs", () => {
+    seedVaultMemoryProjects(db, ["the-vault", "vault-collab"]);
+
+    const handoff = handoffs.publishHandoff({
+      shortPrompt: "Warn on invalid related project only.",
+      sourceProject: "the-vault",
+      targetProject: "vault-collab",
+      relatedProjects: ["missing-project"]
+    });
+
+    expect(handoff).toMatchObject({
+      sourceProject: "the-vault",
+      targetProject: "vault-collab",
+      relatedProjects: ["missing-project"],
+      warnings: [unknownProjectMessage]
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM handoffs").get()).toEqual({ count: 1 });
+    expect(events.listEvents({ handoffUid: handoff.handoffUid }).map((event) => event.eventType))
+      .toEqual(["handoff.published", "handoff.related_project_warning"]);
   });
 
   it("stores typed discovery handoff payloads while keeping short prompts additive", () => {

@@ -860,6 +860,7 @@ export interface HandoffRecord {
   updatedAt: string;
   resolvedAt: string | null;
   staleAt: string | null;
+  warnings?: string[];
 }
 
 export type HandoffActionKind =

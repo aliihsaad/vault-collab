@@ -6,6 +6,10 @@ import { discoveryHandoffSchemaVersion, progressHandoffStatuses } from "../types
 import type { EventService } from "./event.service.js";
 import type { PolicyEngine } from "./policy-engine.service.js";
 import {
+  assertVaultProjectSlugExists,
+  missingVaultProjectSlugWarnings
+} from "./project-slug-validation.js";
+import {
   firstSuggestedRoleProfileIdForLabels,
   resolveRoleProfileIdFromDb
 } from "./role-profile-resolution.js";
@@ -128,6 +132,9 @@ export class HandoffService {
   ) {}
 
   publishHandoff(input: PublishHandoffInput): HandoffRecord {
+    assertVaultProjectSlugExists(this.db, input.sourceProject);
+    assertVaultProjectSlugExists(this.db, input.targetProject);
+
     const now = this.now();
     const handoffUid = `vc_handoff_${randomUUID()}`;
     const priority = input.priority ?? "normal";
@@ -136,6 +143,7 @@ export class HandoffService {
     const sourceProjectKey = projectKey(input.sourceProject);
     const targetProjectKey = projectKey(input.targetProject);
     const relatedProjects = normalizeRelatedProjects(input);
+    const warnings = missingVaultProjectSlugWarnings(this.db, relatedProjects);
     const queuePosition =
       input.queuePosition ?? this.nextQueuePosition(input.targetProject, queueKey);
     const labels = input.labels ?? [];
@@ -245,7 +253,19 @@ export class HandoffService {
       }
       });
 
-    return this.requireHandoff(handoffUid);
+    if (warnings.length > 0) {
+      this.events.recordEvent({
+        eventType: "handoff.related_project_warning",
+        handoffUid,
+        sessionUid: input.sourceSessionUid ?? null,
+        payload: {
+          warnings
+        }
+      });
+    }
+
+    const handoff = this.requireHandoff(handoffUid);
+    return warnings.length > 0 ? { ...handoff, warnings } : handoff;
   }
 
   listInbox(filter: HandoffFilters = {}): HandoffRecord[] {
