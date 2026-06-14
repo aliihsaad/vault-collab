@@ -171,6 +171,22 @@ function deriveAdapterToken(secret: string, sessionUid: string, adapterId: strin
     .digest("base64url");
 }
 
+function seedVaultMemoryProjects(dbPath: string, slugs: string[]): void {
+  const db = createCollabDatabase(dbPath);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      slug TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    )
+  `);
+
+  const insert = db.prepare("INSERT INTO projects (slug, name) VALUES (?, ?)");
+  for (const slug of slugs) {
+    insert.run(slug, slug);
+  }
+  db.close();
+}
+
 describe("Vault Collab MCP tools", () => {
   let dbPath: string;
   let cwd: string;
@@ -844,6 +860,30 @@ describe("Vault Collab MCP tools", () => {
     expect(message).toContain("qa-reviewer");
   });
 
+  it("returns an MCP error and creates no session when register_session receives an invalid project slug", async () => {
+    seedVaultMemoryProjects(dbPath, ["vault-collab"]);
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const rejected = await tools.callTool("vault_collab_register_session", {
+      displayName: "Bad Project",
+      clientType: "codex",
+      project: "missing-project",
+      workspacePath: cwd
+    });
+
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content[0]).toMatchObject({ type: "text" });
+    const message = rejected.content[0]?.type === "text" ? rejected.content[0].text : "";
+    expect(message).toBe(
+      "Project 'missing-project' does not exist in vault-memory. Create it first or use an existing project slug."
+    );
+
+    const db = createCollabDatabase(dbPath);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 0 });
+    db.close();
+  });
+
   it("documents role profile id inputs on write-path tools", () => {
     expect(schemaKeys("vault_collab_create_launch_request")).toEqual(
       expect.arrayContaining(["roleProfileId", "role_profile_id"])
@@ -901,6 +941,59 @@ describe("Vault Collab MCP tools", () => {
 
     expect(rejected.isError).toBe(true);
     expect(JSON.stringify(rejected)).toMatch(/unsupported typed payload schema_version/i);
+  });
+
+  it("returns an MCP error and creates no handoff when publish_handoff receives an invalid target project slug", async () => {
+    seedVaultMemoryProjects(dbPath, ["vault-collab"]);
+    const tools = createVaultCollabMcpTools({ dbPath });
+    closeTools = tools.close;
+
+    const rejected = await tools.callTool("vault_collab_publish_handoff", {
+      shortPrompt: "This should not create a handoff.",
+      sourceProject: "vault-collab",
+      targetProject: "missing-project"
+    });
+
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content[0]).toMatchObject({ type: "text" });
+    const message = rejected.content[0]?.type === "text" ? rejected.content[0].text : "";
+    expect(message).toBe(
+      "Project 'missing-project' does not exist in vault-memory. Create it first or use an existing project slug."
+    );
+
+    const db = createCollabDatabase(dbPath);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM handoffs").get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it("validates linked handoff projects at the MCP handler before saving Vault memory", async () => {
+    seedVaultMemoryProjects(dbPath, ["vault-collab"]);
+    const saves: VaultMemorySaveInput[] = [];
+    const vaultMemoryClient: VaultMemoryClient = {
+      saveMemory: async (input) => {
+        saves.push(input);
+        return { itemUid: "vm_should_not_be_saved" };
+      }
+    };
+    const tools = createVaultCollabMcpTools({ dbPath, vaultMemoryClient });
+    closeTools = tools.close;
+
+    const rejected = await tools.callTool("vault_collab_publish_handoff_with_vault_memory", {
+      shortPrompt: "This should fail before memory save.",
+      fullBrief: "The MCP handler should reject the invalid project slug first.",
+      sourceProject: "vault-collab",
+      targetProject: "missing-project"
+    });
+
+    expect(rejected.isError).toBe(true);
+    expect(JSON.stringify(rejected)).toMatch(
+      /Project 'missing-project' does not exist in vault-memory/
+    );
+    expect(saves).toEqual([]);
+
+    const db = createCollabDatabase(dbPath);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM handoffs").get()).toEqual({ count: 0 });
+    db.close();
   });
 
   it("returns the expanded 13-role catalog through MCP", async () => {
