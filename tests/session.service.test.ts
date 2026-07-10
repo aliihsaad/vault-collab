@@ -10,8 +10,6 @@ import { seedTestProjects } from "./project-fixture.js";
 
 const workspacePath = "C:\\workspace\\vault-collab";
 const adapterSecret = "phase-7-adapter-secret";
-const unknownProjectMessage =
-  "Project 'missing-project' does not exist. Use vault_list_projects to see valid project slugs.";
 
 function seedVaultMemoryProjects(db: CollabDatabase, slugs: string[]): void {
   db.exec(`
@@ -198,20 +196,41 @@ describe("SessionService", () => {
     });
   });
 
-  it("rejects sessions when the project slug has no projects row", () => {
-    seedVaultMemoryProjects(db, ["vault-collab"]);
+  it("auto-creates the project row when registering a session for a new project", () => {
+    const registered = service.registerSession({
+      displayName: "Codex terminal",
+      clientType: "codex",
+      project: "Mariam Saad Portfolio",
+      workspacePath,
+      capabilities: {}
+    });
 
-    expect(() =>
-      service.registerSession({
-        displayName: "Codex terminal",
-        clientType: "codex",
-        project: "missing-project",
-        workspacePath,
-        capabilities: {}
-      })
-    ).toThrow(unknownProjectMessage);
+    expect(registered).toMatchObject({
+      project: "mariam-saad-portfolio",
+      status: "idle"
+    });
+    expect(
+      db.prepare("SELECT slug, name FROM projects WHERE slug = ?").get("mariam-saad-portfolio")
+    ).toEqual({ slug: "mariam-saad-portfolio", name: "Mariam Saad Portfolio" });
+  });
 
-    expect(db.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 0 });
+  it("resolves a differently-cased project name to the existing canonical slug", () => {
+    seedVaultMemoryProjects(db, ["deutschboost"]);
+
+    const registered = service.registerSession({
+      displayName: "Codex terminal",
+      clientType: "codex",
+      project: "DeutschBoost",
+      workspacePath,
+      capabilities: {}
+    });
+
+    expect(registered.project).toBe("deutschboost");
+    expect(
+      db
+        .prepare("SELECT COUNT(*) AS count FROM projects WHERE slug IN ('deutschboost', 'DeutschBoost')")
+        .get()
+    ).toEqual({ count: 1 });
   });
 
   it("round-trips a first-class custom session role", () => {

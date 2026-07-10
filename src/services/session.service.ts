@@ -5,6 +5,7 @@ import { projectKey } from "../project-key.js";
 import type { EventService } from "./event.service.js";
 import type { LaunchRequestService } from "./launch-request.service.js";
 import { rethrowProjectForeignKeyError } from "./project-foreign-key-error.js";
+import { resolveOrCreateProjectSlug } from "./project-registry.js";
 import { resolveRoleProfileIdFromDb } from "./role-profile-resolution.js";
 import { validateVaultCollabSessionSnapshot } from "./snapshot-validator.js";
 import { coreRoleProfileIds } from "../types.js";
@@ -111,6 +112,7 @@ export class SessionService {
     const capabilities = this.mergeRoleProfileCapabilities(roleProfileId, inputCapabilities);
 
     const register = this.db.transaction(() => {
+      const projectSlug = resolveOrCreateProjectSlug(this.db, input.project);
       this.db
         .prepare(
           `
@@ -145,7 +147,7 @@ export class SessionService {
           sessionUid,
           input.displayName,
           input.clientType,
-          input.project,
+          projectSlug,
           sessionProjectKey,
           input.workspacePath,
           role,
@@ -171,7 +173,7 @@ export class SessionService {
         sessionUid,
         payload: {
           clientType: input.clientType,
-          project: input.project
+          project: projectSlug
         }
       });
 

@@ -862,27 +862,28 @@ describe("Vault Collab MCP tools", () => {
     expect(message).toContain("qa-reviewer");
   });
 
-  it("returns an MCP error and creates no session when register_session receives an invalid project slug", async () => {
+  it("auto-creates the project and registers when register_session receives a new project slug", async () => {
     seedVaultMemoryProjects(dbPath, ["vault-collab"]);
     const tools = createVaultCollabMcpTools({ dbPath });
     closeTools = tools.close;
 
-    const rejected = await tools.callTool("vault_collab_register_session", {
-      displayName: "Bad Project",
-      clientType: "codex",
-      project: "missing-project",
-      workspacePath: cwd
-    });
-
-    expect(rejected.isError).toBe(true);
-    expect(rejected.content[0]).toMatchObject({ type: "text" });
-    const message = rejected.content[0]?.type === "text" ? rejected.content[0].text : "";
-    expect(message).toBe(
-      "Project 'missing-project' does not exist. Use vault_list_projects to see valid project slugs."
+    const session = structured<{ sessionUid: string; project: string }>(
+      await tools.callTool("vault_collab_register_session", {
+        displayName: "New Project",
+        clientType: "codex",
+        project: "missing-project",
+        workspacePath: cwd
+      })
     );
 
+    expect(session.sessionUid).toMatch(/^vc_sess_/);
+    expect(session.project).toBe("missing-project");
+
     const db = createCollabDatabase(dbPath);
-    expect(db.prepare("SELECT COUNT(*) AS count FROM sessions").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT slug, name FROM projects WHERE slug = ?").get("missing-project")).toEqual({
+      slug: "missing-project",
+      name: "missing-project"
+    });
     db.close();
   });
 
