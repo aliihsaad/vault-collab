@@ -909,4 +909,68 @@ describe("LaunchRequestService", () => {
     expect(JSON.stringify(detail)).not.toContain(requester.sessionToken);
     expect(JSON.stringify(detail)).not.toContain(approver.sessionToken);
   });
+
+  describe("sweepStalledLaunchRequests", () => {
+    function createLaunchingRequest(instructions: string) {
+      const request = service.createLaunchRequest({
+        requestedBySessionUid: requester.sessionUid,
+        sessionToken: requester.sessionToken,
+        provider: "codex",
+        model: "gpt-5-codex",
+        project: "Vault Collab",
+        workspacePath,
+        role: "implementer",
+        initialInstructions: instructions,
+        permissionMode: "read-only"
+      });
+      service.approveLaunchRequest(
+        request.launchRequestUid,
+        approver.sessionUid,
+        approver.sessionToken,
+        "Approved."
+      );
+      service.markLaunchRequestLaunching(
+        request.launchRequestUid,
+        broker.sessionUid,
+        broker.sessionToken,
+        "Broker accepted request."
+      );
+      return request;
+    }
+
+    it("fails launch requests stuck in launching beyond the threshold", () => {
+      const stalled = createLaunchingRequest("Stalled launch.");
+      now = new Date(now.getTime() + 31 * 60_000);
+      const fresh = createLaunchingRequest("Fresh launch.");
+
+      const sweptUids = service.sweepStalledLaunchRequests({ thresholdMs: 30 * 60_000 });
+
+      expect(sweptUids).toEqual([stalled.launchRequestUid]);
+      expect(service.getLaunchRequest(stalled.launchRequestUid)).toMatchObject({
+        status: "failed",
+        completedAt: now.toISOString()
+      });
+      expect(service.getLaunchRequest(fresh.launchRequestUid)).toMatchObject({
+        status: "launching"
+      });
+
+      const failedEvents = events
+        .listEvents({ eventType: "launch_request.failed" })
+        .filter((event) => event.payload.launchRequestUid === stalled.launchRequestUid);
+      expect(failedEvents).toHaveLength(1);
+      expect(failedEvents[0]?.payload.reason).toMatch(/stalled/i);
+    });
+
+    it("does not touch running or terminal launch requests", () => {
+      const { running } = createRunningLaunchWithLaunchedSession("Running worker");
+      now = new Date(now.getTime() + 24 * 60 * 60_000);
+
+      const sweptUids = service.sweepStalledLaunchRequests({ thresholdMs: 30 * 60_000 });
+
+      expect(sweptUids).toEqual([]);
+      expect(service.getLaunchRequest(running.launchRequestUid)).toMatchObject({
+        status: "running"
+      });
+    });
+  });
 });

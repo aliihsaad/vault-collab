@@ -1180,6 +1180,14 @@ export function createVaultCollabMcpTools(
     options.heartbeatIntervalMs ?? defaultHeartbeatIntervalMs
   );
 
+  // Self-heal launches abandoned by dead brokers so they don't pile up as
+  // active launch requests; runs once per server start.
+  try {
+    launchRequests.sweepStalledLaunchRequests();
+  } catch {
+    // Sweeping is best-effort; never block server startup on it.
+  }
+
   const handlers: Record<
     VaultCollabToolName,
     (args: Record<string, unknown>) => unknown | Promise<unknown>

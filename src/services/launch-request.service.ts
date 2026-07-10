@@ -64,6 +64,9 @@ interface LaunchSessionRow {
 }
 
 const launchableStatuses: LaunchRequestStatus[] = ["approved"];
+// Launching normally settles into running or stopped within minutes; anything
+// older than this without a session link is treated as an abandoned launch.
+const defaultStalledLaunchThresholdMs = 30 * 60_000;
 const cancellableStatuses: LaunchRequestStatus[] = ["requested", "approved"];
 const stoppableStatuses: LaunchRequestStatus[] = ["launching", "running"];
 const failableStatuses: LaunchRequestStatus[] = ["approved", "launching", "running"];
@@ -662,6 +665,65 @@ export class LaunchRequestService {
       reason
     });
     return this.requireLaunchRequest(launchRequestUid);
+  }
+
+  sweepStalledLaunchRequests(options: { thresholdMs?: number } = {}): string[] {
+    const thresholdMs = options.thresholdMs ?? defaultStalledLaunchThresholdMs;
+    if (!Number.isFinite(thresholdMs) || thresholdMs <= 0) {
+      throw new Error("thresholdMs must be greater than 0");
+    }
+
+    const nowDate = this.clock();
+    const now = nowDate.toISOString();
+    const cutoff = new Date(nowDate.getTime() - thresholdMs).toISOString();
+    const rows = this.db
+      .prepare(
+        `
+        SELECT launch_request_uid
+        FROM launch_requests
+        WHERE status = 'launching'
+          AND updated_at <= ?
+        ORDER BY created_at ASC, launch_request_uid ASC
+      `
+      )
+      .all(cutoff) as Array<{ launch_request_uid: string }>;
+
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const reason = `Stalled in launching with no session link for over ${Math.round(thresholdMs / 60_000)} minutes; swept automatically.`;
+    const update = this.db.prepare(
+      `
+      UPDATE launch_requests
+      SET status = 'failed',
+          status_detail = ?,
+          updated_at = ?,
+          completed_at = ?
+      WHERE launch_request_uid = ?
+        AND status = 'launching'
+    `
+    );
+    const sweptLaunchRequestUids: string[] = [];
+
+    for (const row of rows) {
+      const result = update.run(reason, now, now, row.launch_request_uid);
+      if (result.changes !== 1) {
+        continue;
+      }
+
+      sweptLaunchRequestUids.push(row.launch_request_uid);
+      this.events.recordEvent({
+        eventType: "launch_request.failed",
+        payload: {
+          launchRequestUid: row.launch_request_uid,
+          previousStatus: "launching",
+          reason
+        }
+      });
+    }
+
+    return sweptLaunchRequestUids;
   }
 
   private assertSessionCapability(
